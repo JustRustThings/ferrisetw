@@ -109,7 +109,7 @@ impl TraceData {
         for prov in &self.providers {
             // We can unwrap safely, provider builder wouldn't accept a provider without guid
             // so we must have Some(Guid)
-            if prov.guid.unwrap() == record.provider_id() {
+            if prov.guid() == record.provider_id() {
                 prov.on_event(record, &self.schema_locator);
             }
         }
@@ -194,11 +194,7 @@ macro_rules! impl_base_trace {
                 self
             }
 
-            // TODO: Check if provider is built before inserting
             fn enable(mut self, provider: provider::Provider) -> Self {
-                if provider.guid.is_none() {
-                    panic!("Can't enable Provider with no GUID");
-                }
                 self.data.insert_provider(provider);
                 self
             }
@@ -336,26 +332,22 @@ impl TraceTrait for UserTrace {
     #[allow(unused_must_use)]
     fn enable_provider(&self) {
         for prov in &self.data.providers {
-            // Should always be Some but just in case
-            if let Some(prov_guid) = prov.guid {
+            let owned_event_filter_descriptors: Vec<EventFilterDescriptor> = prov.filters()
+                .iter()
+                .filter_map(|filter| filter.to_event_filter_descriptor().ok()) // Silently ignoring invalid filters (basically, empty ones)
+                .collect();
 
-                let owned_event_filter_descriptors: Vec<EventFilterDescriptor> = prov.filters()
-                    .iter()
-                    .filter_map(|filter| filter.to_event_filter_descriptor().ok()) // Silently ignoring invalid filters (basically, empty ones)
-                    .collect();
+            let parameters =
+                EnableTraceParameters::create(prov.guid(), prov.trace_flags(), &owned_event_filter_descriptors);
 
-                let parameters =
-                    EnableTraceParameters::create(prov_guid, prov.trace_flags, &owned_event_filter_descriptors);
-
-                // Fixme: return error if this fails
-                self.etw.enable_trace(
-                    prov_guid,
-                    prov.any,
-                    prov.all,
-                    prov.level,
-                    parameters,
-                );
-            }
+            // Fixme: return error if this fails
+            self.etw.enable_trace(
+                prov.guid(),
+                prov.any(),
+                prov.all(),
+                prov.level(),
+                parameters,
+            );
         }
     }
 }
@@ -382,7 +374,7 @@ impl TraceTrait for KernelTrace {
     }
 
     fn enable_flags(providers: &[Provider]) -> u32 {
-        providers.iter().fold(0, |acc, x| acc | x.flags)
+        providers.iter().fold(0, |acc, x| acc | x.kernel_flags())
     }
 
     fn trace_guid() -> GUID {
@@ -446,19 +438,11 @@ mod test {
 
     #[test]
     fn test_enable_multiple_providers() {
-        let prov = Provider::new().by_guid("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716");
-        let prov1 = Provider::new().by_guid("A0C1853B-5C40-4B15-8766-3CF1C58F985A");
+        let prov = Provider::by_guid("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716").build();
+        let prov1 = Provider::by_guid("A0C1853B-5C40-4B15-8766-3CF1C58F985A").build();
 
         let trace = UserTrace::new().enable(prov).enable(prov1);
 
         assert_eq!(trace.data.providers.len(), 2);
-    }
-
-    #[test]
-    #[should_panic(expected = "Can't enable Provider with no GUID")]
-    fn test_provider_no_guid_should_panic() {
-        let prov = Provider::new();
-
-        let trace = UserTrace::new().enable(prov);
     }
 }
