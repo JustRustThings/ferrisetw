@@ -14,7 +14,6 @@ use std::fmt::Formatter;
 use std::marker::PhantomData;
 use windows::core::GUID;
 use windows::core::PWSTR;
-use windows::Win32::Foundation::MAX_PATH;
 use windows::Win32::System::Diagnostics::Etw;
 use windows::Win32::System::Diagnostics::Etw::EVENT_FILTER_DESCRIPTOR;
 use widestring::ucstring::U16CString;
@@ -147,18 +146,25 @@ impl From<ProcessTraceMode> for u32 {
 #[derive(Clone, Copy)]
 pub struct EventTraceProperties {
     etw_trace_properties: Etw::EVENT_TRACE_PROPERTIES,
-    trace_name: [u8; MAX_PATH as usize],
-    log_file_name: [u8; MAX_PATH as usize],
+    wide_trace_name: [u16; 1024],    // The session name is limited to 1,024 characters
+    wide_log_file_name: [u16; 1024], // The log file name is limited to 1,024 characters
 }
 
 
 impl std::fmt::Debug for EventTraceProperties {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<EventTraceProperties>")
+        let name = U16CString::from_vec_truncate(self.wide_trace_name).to_string_lossy();
+        f.debug_struct("EventTraceProperties")
+            .field("name", &name)
+            .finish()
     }
 }
 
 impl EventTraceProperties {
+    /// Create a new instance
+    ///
+    /// # Notes
+    /// `trace_name` is limited to 1024 characters (will be truncated at 1023 characters, to make sure its ends with a null widechar)
     pub(crate) fn new<T>(
         trace_name: &str,
         trace_properties: &TraceProperties,
@@ -188,7 +194,7 @@ impl EventTraceProperties {
         etw_trace_properties.LogFileMode |= T::augmented_file_mode();
         etw_trace_properties.EnableFlags = Etw::EVENT_TRACE_FLAG(T::enable_flags(providers));
 
-        etw_trace_properties.LoggerNameOffset = offset_of!(EventTraceProperties, log_file_name) as u32;
+        etw_trace_properties.LoggerNameOffset = offset_of!(EventTraceProperties, wide_log_file_name) as u32;
 
         // https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties#remarks
         // > You do not copy the session name to the offset. The StartTrace function copies the name for you.
@@ -196,10 +202,12 @@ impl EventTraceProperties {
         // Let's do it anyway, even though that's not required
         let mut s = Self {
             etw_trace_properties,
-            trace_name: [0; MAX_PATH as usize],
-            log_file_name: [0; MAX_PATH as usize],
+            wide_trace_name: [0u16; 1024],
+            wide_log_file_name: [0u16; 1024],
         };
-        s.trace_name[..trace_name.len()].copy_from_slice(trace_name.as_bytes());
+        let wide_trace_name = U16CString::from_str_truncate(trace_name);
+        let name_len = wide_trace_name.len().min(1023);
+        s.wide_trace_name[..name_len].copy_from_slice(wide_trace_name.as_slice());
 
         s
     }
@@ -216,8 +224,8 @@ impl EventTraceProperties {
         &mut self.etw_trace_properties as *mut Etw::EVENT_TRACE_PROPERTIES
     }
 
-    pub fn trace_name_array(&self) -> &[u8] {
-        &self.trace_name
+    pub fn trace_name_array(&self) -> &[u16] {
+        &self.wide_trace_name
     }
 }
 
