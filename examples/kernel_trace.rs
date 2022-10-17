@@ -35,6 +35,8 @@ fn main() {
         .named(String::from("MyKernelProvider"))
         .enable(provider)
         .start()
+        .unwrap()
+        .process()
         .unwrap();
 
     std::thread::sleep(Duration::new(20, 0));

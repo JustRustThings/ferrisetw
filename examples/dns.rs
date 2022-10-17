@@ -8,6 +8,7 @@ use ferrisetw::provider::TraceFlags;
 use ferrisetw::parser::Parser;
 use ferrisetw::schema_locator::SchemaLocator;
 use ferrisetw::native::etw_types::EventRecord;
+use ferrisetw::trace::TraceTrait;
 use ferrisetw::trace::UserTrace;
 use ferrisetw::parser::TryParse;
 use ferrisetw::trace::TraceBaseTrait;
@@ -82,6 +83,8 @@ fn main() {
     let mut trace = UserTrace::new()
         .enable(dns_provider)
         .start()
+        .unwrap()
+        .process()
         .unwrap();
 
     println!("ID   Status Options         Ty Name       Results");

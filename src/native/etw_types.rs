@@ -242,10 +242,10 @@ pub struct EventTraceLogfile<'tracedata> {
 
 impl<'tracedata> EventTraceLogfile<'tracedata> {
     /// Create a new instance
-    pub fn create(trace_data: &'tracedata Box<TraceData>, callback: unsafe extern "system" fn(*mut Etw::EVENT_RECORD)) -> Self {
+    pub fn create(trace_data: &'tracedata Box<TraceData>, trace_name: &str, callback: unsafe extern "system" fn(*mut Etw::EVENT_RECORD)) -> Self {
         let mut native = Etw::EVENT_TRACE_LOGFILEW::default();
 
-        let mut wide_logger_name = U16CString::from_str_truncate(&trace_data.name);
+        let mut wide_logger_name = U16CString::from_str_truncate(trace_name);
         native.LoggerName = PWSTR(wide_logger_name.as_mut_ptr());
         native.Anonymous1.ProcessTraceMode =
             u32::from(ProcessTraceMode::RealTime) | u32::from(ProcessTraceMode::EventRecord);

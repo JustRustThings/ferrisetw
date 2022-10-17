@@ -104,13 +104,14 @@ impl NativeEtw {
 
     pub(crate) fn open<'a>(
         &mut self,
+        trace_name: &str,
         trace_data: &'a Box<TraceData>,
     ) -> EvntraceNativeResult<EventTraceLogfile<'a>> {
-        self.open_trace(trace_data)
+        self.open_trace(trace_name, trace_data)
     }
 
-    pub(crate) fn stop(&mut self, trace_data: &TraceData) -> EvntraceNativeResult<()> {
-        self.stop_trace(trace_data)?;
+    pub(crate) fn stop(&mut self) -> EvntraceNativeResult<()> {
+        self.stop_trace()?;
         self.close_trace()?;
         Ok(())
     }
@@ -136,11 +137,11 @@ impl NativeEtw {
         Ok(())
     }
 
-    pub(crate) fn register_trace(&mut self, trace_data: &TraceData) -> EvntraceNativeResult<()> {
+    pub(crate) fn register_trace(&mut self) -> EvntraceNativeResult<()> {
         if let Err(err) = self.start_trace() {
             if matches!(err, EvntraceNativeError::AlreadyExist) {
                 // TODO: Check need admin errors
-                self.stop_trace(trace_data)?;
+                self.stop_trace()?;
                 self.start_trace()?;
             } else {
                 return Err(err);
@@ -178,8 +179,8 @@ impl NativeEtw {
         Ok(())
     }
 
-    fn open_trace<'a>(&mut self, trace_data: &'a Box<TraceData>) -> EvntraceNativeResult<EventTraceLogfile<'a>> {
-        let mut log_file = EventTraceLogfile::create(trace_data, trace_callback_thunk);
+    fn open_trace<'a>(&mut self, trace_name: &str, trace_data: &'a Box<TraceData>) -> EvntraceNativeResult<EventTraceLogfile<'a>> {
+        let mut log_file = EventTraceLogfile::create(trace_data, trace_name, trace_callback_thunk);
 
         self.session_handle = unsafe {
             // This function modifies the data pointed to by log_file.
@@ -200,9 +201,8 @@ impl NativeEtw {
         Ok(log_file)
     }
 
-    fn stop_trace(&mut self, trace_data: &TraceData) -> EvntraceNativeResult<()> {
+    fn stop_trace(&mut self) -> EvntraceNativeResult<()> {
         self.control_trace(
-            trace_data,
             windows::Win32::System::Diagnostics::Etw::EVENT_TRACE_CONTROL_STOP,
         )?;
         Ok(())
@@ -229,7 +229,6 @@ impl NativeEtw {
 
     fn control_trace(
         &mut self,
-        trace_data: &TraceData,
         control_code: EvenTraceControl,
     ) -> EvntraceNativeResult<()> {
         let status = unsafe {

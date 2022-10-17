@@ -56,6 +56,8 @@ fn simple_kernel_trace_trace() {
     let mut _kernel_trace = KernelTrace::new()
         .enable(kernel_provider)
         .start()
+        .unwrap()
+        .process()
         .unwrap();
 
     generate_image_load_events();

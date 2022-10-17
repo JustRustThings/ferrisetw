@@ -49,6 +49,8 @@ fn simple_user_dns_trace() {
     let mut _dns_trace = UserTrace::new()
         .enable(dns_provider)
         .start()
+        .unwrap()
+        .process()
         .unwrap();
 
     generate_dns_events();
@@ -81,6 +83,8 @@ fn test_event_id_filter() {
     let mut _dns_trace = UserTrace::new()
         .enable(dns_provider)
         .start()
+        .unwrap()
+        .process()
         .unwrap();
 
     generate_dns_events();
