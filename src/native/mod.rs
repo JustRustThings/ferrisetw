@@ -17,5 +17,12 @@ pub use evntrace::EvntraceNativeError;
 
 // These are returned by some of our public APIs
 pub use etw_types::DecodingSource;
+pub use etw_types::extended_data::ExtendedDataItem;
+pub use etw_types::extended_data::EventHeaderExtendedDataItem;
 pub use evntrace::TraceHandle;
 pub use evntrace::ControlHandle;
+pub use windows::Win32::System::Diagnostics::Etw::{
+    EVENT_EXTENDED_ITEM_INSTANCE as ETW_EVENT_EXTENDED_ITEM_INSTANCE,
+    EVENT_EXTENDED_ITEM_STACK_TRACE32 as ETW_EVENT_EXTENDED_ITEM_INSTANCE,
+    EVENT_EXTENDED_ITEM_STACK_TRACE64 as ETW_EVENT_EXTENDED_ITEM_STACK_TRACE64,
+};

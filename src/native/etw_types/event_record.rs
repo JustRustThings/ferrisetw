@@ -27,14 +27,14 @@ impl EventRecord {
     /// # Safety
     ///
     /// Obviously, the returned pointer is only valid as long `self` is valid and not modified.
-    pub fn as_raw_ptr(&self) -> *const EVENT_RECORD {
+    pub(crate) fn as_raw_ptr(&self) -> *const EVENT_RECORD {
         &self.0 as *const EVENT_RECORD
     }
 
     /// The `UserContext` field from the wrapped `EVENT_RECORD`
     ///
     /// In this crate, it is always populated to point to a valid `CallbackData`
-    pub fn user_context(&self) -> *const std::ffi::c_void {
+    pub(crate) fn user_context(&self) -> *const std::ffi::c_void {
         self.0.UserContext as *const _
     }
 
