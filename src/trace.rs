@@ -62,11 +62,9 @@ pub struct TraceProperties {
     pub log_file_mode: u32,
 }
 
-/// Struct which holds the Trace data
-///
-/// This struct will hold the main data required to handle an ETW Session
+/// Data used (and mutated) by callbacks when the trace is running
 #[derive(Debug, Default)]
-pub struct TraceData {
+pub struct CallbackData {
     /// Represents the current events handled
     events_handled: AtomicUsize,
     /// List of Providers associated with the Trace
@@ -74,9 +72,9 @@ pub struct TraceData {
     schema_locator: SchemaLocator,
 }
 
-impl TraceData {
+impl CallbackData {
     fn new() -> Self {
-        TraceData {
+        Self {
             events_handled: AtomicUsize::new(0),
             providers: Vec::new(),
             schema_locator: SchemaLocator::new(),
@@ -154,7 +152,7 @@ macro_rules! impl_base_trace {
             }
 
             fn process(mut self) -> TraceResult<Self> {
-                self.data.events_handled.store(0, Ordering::Relaxed);
+                self.callback_data.events_handled.store(0, Ordering::Relaxed);
                 self.etw.process()?;
 
                 Ok(self)
@@ -201,7 +199,7 @@ impl TraceTrait for KernelTrace {
 pub struct UserTrace {
     // This is `Box`ed so that it does not move around the stack in case the `UserTrace` is moved
     // This is important, because we give a pointer to it to Windows, so that it passes it back to us on callbacks
-    data: Box<TraceData>,
+    callback_data: Box<CallbackData>,
     etw: evntrace::NativeEtw,
 }
 
@@ -210,19 +208,19 @@ pub struct UserTrace {
 pub struct KernelTrace {
     // This is `Box`ed so that it does not move around the stack in case the `UserTrace` is moved
     // This is important, because we give a pointer to it to Windows, so that it passes it back to us on callbacks
-    data: Box<TraceData>,
+    callback_data: Box<CallbackData>,
     etw: evntrace::NativeEtw,
 }
 
 pub struct UserTraceBuilder {
     name: String,
     properties: TraceProperties,
-    data: TraceData,
+    callback_data: CallbackData,
 }
 pub struct KernelTraceBuilder {
     name: String,
     properties: TraceProperties,
-    data: TraceData,
+    callback_data: CallbackData,
 }
 
 impl UserTrace {
@@ -231,7 +229,7 @@ impl UserTrace {
         let name = format!("n4r1b-trace-{}", utils::rand_string());
         UserTraceBuilder {
             name,
-            data: TraceData::new(),
+            callback_data: CallbackData::new(),
             properties: TraceProperties::default(),
         }
     }
@@ -243,7 +241,7 @@ impl KernelTrace {
         let name = format!("n4r1b-trace-{}", utils::rand_string());
         KernelTraceBuilder {
             name,
-            data: TraceData::new(),
+            callback_data: CallbackData::new(),
             properties: TraceProperties::default(),
         }
     }
@@ -265,7 +263,7 @@ impl UserTraceBuilder {
     /// Currently, this crate only supports defining Providers and their settings when building the trace, because it is easier to ensure memory-safety this way.
     /// It probably would be possible to support changing Providers when the trace is processing, but this is left as a TODO.
     pub fn enable(mut self, provider: Provider) -> Self {
-        self.data.providers.push(provider);
+        self.callback_data.providers.push(provider);
         self
     }
 
@@ -274,14 +272,14 @@ impl UserTraceBuilder {
     /// Windows APIs would call this `Open` the trace.
     /// You'll still have to call [`UserTrace::process`] to start receiving events
     pub fn start(self) -> TraceResult<UserTrace> {
-        let data = Box::new(self.data);
-        let mut etw = evntrace::NativeEtw::new::<UserTrace>(&self.name, &self.properties, &data.providers);
+        let callback_data = Box::new(self.callback_data);
+        let mut etw = evntrace::NativeEtw::new::<UserTrace>(&self.name, &self.properties, &callback_data.providers);
 
         // Call StartTrace(..., self.info.properties)
         etw.register_trace()?;
 
 
-        for prov in &data.providers {
+        for prov in &callback_data.providers {
             let owned_event_filter_descriptors: Vec<EventFilterDescriptor> = prov.filters()
                 .iter()
                 .filter_map(|filter| filter.to_event_filter_descriptor().ok()) // Silently ignoring invalid filters (basically, empty ones)
@@ -300,10 +298,10 @@ impl UserTraceBuilder {
             );
         }
 
-        etw.open(&self.name, &data)?;
+        etw.open(&self.name, &callback_data)?;
 
         Ok(UserTrace {
-            data,
+            callback_data,
             etw,
         })
     }
@@ -330,7 +328,7 @@ impl KernelTraceBuilder {
     /// Currently, this crate only supports defining Providers and their settings when building the trace, because it is easier to ensure memory-safety this way.
     /// It probably would be possible to support changing Providers when the trace is processing, but this is left as a TODO.
     pub fn enable(mut self, provider: Provider) -> Self {
-        self.data.providers.push(provider);
+        self.callback_data.providers.push(provider);
         self
     }
 
@@ -343,8 +341,8 @@ impl KernelTraceBuilder {
     //
     // name if build? start?
     pub fn start(self) -> TraceResult<KernelTrace> {
-        let data = Box::new(self.data);
-        let mut etw = evntrace::NativeEtw::new::<KernelTrace>(&self.name, &self.properties, &data.providers);
+        let callback_data = Box::new(self.callback_data);
+        let mut etw = evntrace::NativeEtw::new::<KernelTrace>(&self.name, &self.properties, &callback_data.providers);
 
         let session_name = if version_helper::is_win8_or_greater() {
             &self.name
@@ -356,10 +354,10 @@ impl KernelTraceBuilder {
 
         // TODO: Implement enable_provider function for providers that require call to TraceSetInformation with extended PERFINFO_GROUPMASK
 
-        etw.open(session_name, &data)?;
+        etw.open(session_name, &callback_data)?;
 
         Ok(KernelTrace {
-            data,
+            callback_data,
             etw,
         })
     }
@@ -399,6 +397,6 @@ mod test {
 
         let trace = UserTrace::new().enable(prov).enable(prov1);
 
-        assert_eq!(trace.data.providers.len(), 2);
+        assert_eq!(trace.callback_data.providers.len(), 2);
     }
 }

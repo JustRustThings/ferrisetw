@@ -19,7 +19,7 @@ use windows::Win32::Foundation::ERROR_WMI_INSTANCE_NOT_FOUND;
 
 use super::etw_types::*;
 use crate::provider::Provider;
-use crate::trace::{TraceData, TraceProperties, TraceTrait};
+use crate::trace::{CallbackData, TraceProperties, TraceTrait};
 use crate::traits::*;
 
 /// Evntrace native module errors
@@ -51,7 +51,7 @@ extern "system" fn trace_callback_thunk(p_record: *mut Etw::EVENT_RECORD) {
         };
 
         if let Some(event_record) = record_from_ptr {
-            let p_user_context = event_record.user_context().cast::<TraceData>();
+            let p_user_context = event_record.user_context().cast::<CallbackData>();
             let user_context = unsafe {
                 // Safety:
                 //  * the API of this create guarantees this points to a `TraceData` already created
@@ -105,9 +105,9 @@ impl NativeEtw {
     pub(crate) fn open<'a>(
         &mut self,
         trace_name: &str,
-        trace_data: &'a Box<TraceData>,
+        callback_data: &'a Box<CallbackData>,
     ) -> EvntraceNativeResult<EventTraceLogfile<'a>> {
-        self.open_trace(trace_name, trace_data)
+        self.open_trace(trace_name, callback_data)
     }
 
     pub(crate) fn stop(&mut self) -> EvntraceNativeResult<()> {
@@ -179,8 +179,8 @@ impl NativeEtw {
         Ok(())
     }
 
-    fn open_trace<'a>(&mut self, trace_name: &str, trace_data: &'a Box<TraceData>) -> EvntraceNativeResult<EventTraceLogfile<'a>> {
-        let mut log_file = EventTraceLogfile::create(trace_data, trace_name, trace_callback_thunk);
+    fn open_trace<'a>(&mut self, trace_name: &str, callback_data: &'a Box<CallbackData>) -> EvntraceNativeResult<EventTraceLogfile<'a>> {
+        let mut log_file = EventTraceLogfile::create(callback_data, trace_name, trace_callback_thunk);
 
         self.session_handle = unsafe {
             // This function modifies the data pointed to by log_file.

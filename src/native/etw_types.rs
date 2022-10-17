@@ -8,7 +8,7 @@
 //! needed by using the functions exposed by the modules at the crate level
 use crate::provider::event_filter::EventFilterDescriptor;
 use crate::provider::{Provider, TraceFlags};
-use crate::trace::{TraceData, TraceProperties, TraceTrait};
+use crate::trace::{CallbackData, TraceProperties, TraceTrait};
 use std::ffi::c_void;
 use std::fmt::Formatter;
 use std::marker::PhantomData;
@@ -234,15 +234,15 @@ impl EventTraceProperties {
 /// [EVENT_TRACE_LOGFILEW]: https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/System/Diagnostics/Etw/struct.EVENT_TRACE_LOGFILEW.html
 #[repr(C)]
 #[derive(Clone)]
-pub struct EventTraceLogfile<'tracedata> {
+pub struct EventTraceLogfile<'callbackdata> {
     native: Etw::EVENT_TRACE_LOGFILEW,
     wide_logger_name: U16CString,
-    lifetime: PhantomData<&'tracedata TraceData>,
+    lifetime: PhantomData<&'callbackdata CallbackData>,
 }
 
-impl<'tracedata> EventTraceLogfile<'tracedata> {
+impl<'callbackdata> EventTraceLogfile<'callbackdata> {
     /// Create a new instance
-    pub fn create(trace_data: &'tracedata Box<TraceData>, trace_name: &str, callback: unsafe extern "system" fn(*mut Etw::EVENT_RECORD)) -> Self {
+    pub fn create(callback_data: &'callbackdata Box<CallbackData>, trace_name: &str, callback: unsafe extern "system" fn(*mut Etw::EVENT_RECORD)) -> Self {
         let mut native = Etw::EVENT_TRACE_LOGFILEW::default();
 
         let mut wide_logger_name = U16CString::from_str_truncate(trace_name);
@@ -252,7 +252,7 @@ impl<'tracedata> EventTraceLogfile<'tracedata> {
 
         native.Anonymous2.EventRecordCallback = Some(callback);
 
-        let not_really_mut_ptr = trace_data.as_ref() as *const TraceData as *const c_void as *mut c_void; // That's kind-of fine because the user context is _not supposed_ to be changed by Windows APIs
+        let not_really_mut_ptr = callback_data.as_ref() as *const CallbackData as *const c_void as *mut c_void; // That's kind-of fine because the user context is _not supposed_ to be changed by Windows APIs
         native.Context = not_really_mut_ptr;
 
         Self {
