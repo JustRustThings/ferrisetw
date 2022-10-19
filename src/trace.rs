@@ -2,6 +2,7 @@
 //!
 //! Provides both a Kernel and User trace that allows to start an ETW session
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use super::traits::*;
 use crate::native::etw_types::{EventRecord, EventTraceProperties};

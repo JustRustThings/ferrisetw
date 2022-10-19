@@ -59,7 +59,7 @@ extern "system" fn trace_callback_thunk(p_record: *mut Etw::EVENT_RECORD) {
         };
 
         if let Some(event_record) = record_from_ptr {
-            let p_user_context = event_record.user_context().cast::<CallbackData>();
+            let p_user_context = event_record.user_context().cast::<Arc<CallbackData>>();
             let user_context = unsafe {
                 // Safety:
                 //  * the API of this create guarantees this points to a `TraceData` already created
@@ -68,7 +68,10 @@ extern "system" fn trace_callback_thunk(p_record: *mut Etw::EVENT_RECORD) {
                 p_user_context.as_ref()
             };
             if let Some(user_context) = user_context {
-                user_context.on_event(event_record);
+                // The UserContext is owned by the `NativeEtw` object. When it is dropped, so will the UserContext.
+                // We clone it now, so that the original Arc can be safely dropped at all times, but the callback data (including the closure captured context) will still be alive until the callback ends.
+                let cloned_arc = Arc::clone(user_context);
+                cloned_arc.on_event(event_record);
             }
         }
     })) {
