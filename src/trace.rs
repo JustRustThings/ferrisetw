@@ -4,13 +4,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::traits::*;
-use crate::native::etw_types::{EnableTraceParameters, EventRecord, INVALID_TRACE_HANDLE};
+use crate::native::etw_types::EventRecord;
 use crate::native::{evntrace, version_helper};
 use crate::provider::Provider;
-use crate::provider::event_filter::EventFilterDescriptor;
 use crate::{provider, utils};
 use crate::schema_locator::SchemaLocator;
 use windows::core::GUID;
+use windows::Win32::System::Diagnostics::Etw;
 
 const KERNEL_LOGGER_NAME: &str = "NT Kernel Logger";
 const SYSTEM_TRACE_CONTROL_GUID: &str = "9e814aad-3204-11d2-9a82-006008a86939";
@@ -86,6 +86,15 @@ impl CallbackData {
         self.events_handled.load(Ordering::Relaxed)
     }
 
+    /// Reset the event counter
+    pub fn reset_events_handled(&self) {
+        self.events_handled.store(0, Ordering::Relaxed)
+    }
+
+    pub fn provider_flags<T: TraceTrait>(&self) -> Etw::EVENT_TRACE_FLAG {
+        Etw::EVENT_TRACE_FLAG(T::enable_flags(&self.providers))
+    }
+
     pub(crate) fn on_event(&self, record: &EventRecord) {
         self.events_handled.fetch_add(1, Ordering::Relaxed);
 
@@ -115,15 +124,6 @@ pub trait TraceBaseTrait {
     where
         Self: Sized;
 
-    /// Stops a Trace session
-    ///
-    /// # Note
-    /// Since a call to `start` will block thread and in case we want to execute it within a thread
-    /// we would -- for now -- have to move it to the context of the new thread, this function is
-    /// called from the [Drop] implementation.
-    ///
-    /// This function will log if it fails
-    fn stop(&mut self);
 }
 
 /// Specific trait for a Trace
@@ -145,14 +145,8 @@ pub trait TraceTrait: TraceBaseTrait {
 macro_rules! impl_base_trace {
     (for $($t: ty),+) => {
         $(impl TraceBaseTrait for $t {
-            fn stop(&mut self)  {
-                if let Err(err) = self.etw.stop() {
-                    println!("Error stopping trace: {:?}", err);
-                }
-            }
-
-            fn process(mut self) -> TraceResult<Self> {
-                self.callback_data.events_handled.store(0, Ordering::Relaxed);
+            fn process(self) -> TraceResult<Self> {
+                self.etw.reset_event_counter();
                 self.etw.process()?;
 
                 Ok(self)
@@ -195,20 +189,19 @@ impl TraceTrait for KernelTrace {
 
 
 /// A user trace session
+///
+/// To stop the session, you can drop this instance
 #[derive(Debug)]
 pub struct UserTrace {
-    // This is `Box`ed so that it does not move around the stack in case the `UserTrace` is moved
-    // This is important, because we give a pointer to it to Windows, so that it passes it back to us on callbacks
-    callback_data: Box<CallbackData>,
     etw: evntrace::NativeEtw,
 }
 
 /// A kernel trace session
+///
+/// To stop the session, you can drop this instance
+///
 #[derive(Debug)]
 pub struct KernelTrace {
-    // This is `Box`ed so that it does not move around the stack in case the `UserTrace` is moved
-    // This is important, because we give a pointer to it to Windows, so that it passes it back to us on callbacks
-    callback_data: Box<CallbackData>,
     etw: evntrace::NativeEtw,
 }
 
@@ -253,7 +246,7 @@ impl UserTraceBuilder {
         self
     }
 
-    fn set_trace_properties(mut self, props: TraceProperties) -> Self {
+    pub fn set_trace_properties(mut self, props: TraceProperties) -> Self {
         self.properties = props;
         self
     }
@@ -273,35 +266,19 @@ impl UserTraceBuilder {
     /// You'll still have to call [`UserTrace::process`] to start receiving events
     pub fn start(self) -> TraceResult<UserTrace> {
         let callback_data = Box::new(self.callback_data);
-        let mut etw = evntrace::NativeEtw::new::<UserTrace>(&self.name, &self.properties, &callback_data.providers);
-
-        // Call StartTrace(..., self.info.properties)
-        etw.register_trace()?;
-
+        let mut etw = evntrace::NativeEtw::start::<UserTrace>(
+            &self.name,
+            &self.properties,
+            &callback_data)?;
 
         for prov in &callback_data.providers {
-            let owned_event_filter_descriptors: Vec<EventFilterDescriptor> = prov.filters()
-                .iter()
-                .filter_map(|filter| filter.to_event_filter_descriptor().ok()) // Silently ignoring invalid filters (basically, empty ones)
-                .collect();
-
-            let parameters =
-                EnableTraceParameters::create(prov.guid(), prov.trace_flags(), &owned_event_filter_descriptors);
-
-            // Fixme: return error if this fails
-            self.etw.enable_trace(
-                prov.guid(),
-                prov.any(),
-                prov.all(),
-                prov.level(),
-                parameters,
-            );
+            etw.enable_provider(prov)?;
+            // Note: in case this fails for a provider, we ignore the following providers
         }
 
-        etw.open(&self.name, &callback_data)?;
+        etw.open(&self.name, callback_data)?;
 
         Ok(UserTrace {
-            callback_data,
             etw,
         })
     }
@@ -314,7 +291,7 @@ impl KernelTraceBuilder {
         self
     }
 
-    fn set_trace_properties(mut self, props: TraceProperties) -> Self {
+    pub fn set_trace_properties(mut self, props: TraceProperties) -> Self {
         self.properties = props;
         self
     }
@@ -342,7 +319,10 @@ impl KernelTraceBuilder {
     // name if build? start?
     pub fn start(self) -> TraceResult<KernelTrace> {
         let callback_data = Box::new(self.callback_data);
-        let mut etw = evntrace::NativeEtw::new::<KernelTrace>(&self.name, &self.properties, &callback_data.providers);
+        let mut etw = evntrace::NativeEtw::start::<KernelTrace>(
+            &self.name,
+            &self.properties,
+            &callback_data)?;
 
         let session_name = if version_helper::is_win8_or_greater() {
             &self.name
@@ -350,41 +330,16 @@ impl KernelTraceBuilder {
             KERNEL_LOGGER_NAME
         };
 
-        etw.register_trace()?;
-
         // TODO: Implement enable_provider function for providers that require call to TraceSetInformation with extended PERFINFO_GROUPMASK
 
-        etw.open(session_name, &callback_data)?;
+        etw.open(session_name, callback_data)?;
 
         Ok(KernelTrace {
-            callback_data,
             etw,
         })
     }
 }
 
-
-
-/// On drop the ETW session will be stopped if not stopped before
-// TODO: log if it fails??
-#[allow(unused_must_use)]
-impl Drop for UserTrace {
-    fn drop(&mut self) {
-        if self.etw.session_handle() != INVALID_TRACE_HANDLE {
-            self.stop();
-        }
-    }
-}
-
-/// On drop the ETW session will be stopped if not stopped before
-#[allow(unused_must_use)]
-impl Drop for KernelTrace {
-    fn drop(&mut self) {
-        if self.etw.session_handle() != INVALID_TRACE_HANDLE {
-            self.stop();
-        }
-    }
-}
 
 #[cfg(test)]
 mod test {

@@ -7,7 +7,7 @@
 //! In most cases a user of the crate won't have to deal with this and can directly obtain the data
 //! needed by using the functions exposed by the modules at the crate level
 use crate::provider::event_filter::EventFilterDescriptor;
-use crate::provider::{Provider, TraceFlags};
+use crate::provider::TraceFlags;
 use crate::trace::{CallbackData, TraceProperties, TraceTrait};
 use std::ffi::c_void;
 use std::fmt::Formatter;
@@ -168,7 +168,7 @@ impl EventTraceProperties {
     pub(crate) fn new<T>(
         trace_name: &str,
         trace_properties: &TraceProperties,
-        providers: &[Provider],
+        enable_flags: Etw::EVENT_TRACE_FLAG,
     ) -> Self
     where
         T: TraceTrait
@@ -192,7 +192,7 @@ impl EventTraceProperties {
         }
 
         etw_trace_properties.LogFileMode |= T::augmented_file_mode();
-        etw_trace_properties.EnableFlags = Etw::EVENT_TRACE_FLAG(T::enable_flags(providers));
+        etw_trace_properties.EnableFlags = enable_flags;
 
         etw_trace_properties.LoggerNameOffset = offset_of!(EventTraceProperties, wide_log_file_name) as u32;
 

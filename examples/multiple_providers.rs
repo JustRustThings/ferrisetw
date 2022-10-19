@@ -67,5 +67,4 @@ fn main() {
         .unwrap();
 
     std::thread::sleep(Duration::new(10, 0));
-    trace.stop();
 }

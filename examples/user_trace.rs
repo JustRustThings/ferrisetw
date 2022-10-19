@@ -40,5 +40,4 @@ fn main() {
         .unwrap();
 
     std::thread::sleep(Duration::new(20, 0));
-    trace.stop();
 }

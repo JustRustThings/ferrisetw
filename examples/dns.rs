@@ -89,8 +89,7 @@ fn main() {
 
     println!("ID   Status Options         Ty Name       Results");
 
-    std::thread::sleep(Duration::new(120, 0));
-    trace.stop();
+    std::thread::sleep(Duration::new(20, 0));
 
     println!("Done: {:?} events", N_EVENTS);
 }
