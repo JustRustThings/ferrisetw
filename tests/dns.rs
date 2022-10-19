@@ -6,7 +6,7 @@ use std::process::Command;
 use ferrisetw::provider::{Provider, EventFilter};
 use ferrisetw::native::etw_types::EventRecord;
 use ferrisetw::schema_locator::SchemaLocator;
-use ferrisetw::trace::{UserTrace, TraceBaseTrait};
+use ferrisetw::trace::UserTrace;
 use ferrisetw::parser::{Parser, TryParse};
 
 mod utils;
@@ -48,9 +48,7 @@ fn simple_user_dns_trace() {
 
     let mut _dns_trace = UserTrace::new()
         .enable(dns_provider)
-        .start()
-        .unwrap()
-        .process()
+        .start_and_process()
         .unwrap();
 
     generate_dns_events();
@@ -80,11 +78,9 @@ fn test_event_id_filter() {
         })
         .build();
 
-    let mut _dns_trace = UserTrace::new()
+    UserTrace::new()
         .enable(dns_provider)
-        .start()
-        .unwrap()
-        .process()
+        .start_and_process()
         .unwrap();
 
     generate_dns_events();

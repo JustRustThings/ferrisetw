@@ -60,10 +60,10 @@ fn main() {
         .add_callback(registry_callback)
         .build();
 
-    let mut trace = UserTrace::new()
+    UserTrace::new()
         .enable(process_provider)
         .enable(tcpip_provider)
-        .start()
+        .start_and_process()
         .unwrap();
 
     std::thread::sleep(Duration::new(10, 0));

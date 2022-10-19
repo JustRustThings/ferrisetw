@@ -31,12 +31,10 @@ fn main() {
         .add_callback(image_load_callback)
         .build();
 
-    let mut trace = KernelTrace::new()
+    KernelTrace::new()
         .named(String::from("MyKernelProvider"))
         .enable(provider)
-        .start()
-        .unwrap()
-        .process()
+        .start_and_process()
         .unwrap();
 
     std::thread::sleep(Duration::new(20, 0));

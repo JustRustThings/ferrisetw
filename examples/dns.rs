@@ -11,7 +11,6 @@ use ferrisetw::native::etw_types::EventRecord;
 use ferrisetw::trace::TraceTrait;
 use ferrisetw::trace::UserTrace;
 use ferrisetw::parser::TryParse;
-use ferrisetw::trace::TraceBaseTrait;
 use ferrisetw::schema::Schema;
 
 
@@ -80,11 +79,9 @@ fn main() {
         .trace_flags(TraceFlags::EVENT_ENABLE_PROPERTY_PROCESS_START_KEY)
         .build();
 
-    let mut trace = UserTrace::new()
+    UserTrace::new()
         .enable(dns_provider)
-        .start()
-        .unwrap()
-        .process()
+        .start_and_process()
         .unwrap();
 
     println!("ID   Status Options         Ty Name       Results");

@@ -110,26 +110,10 @@ impl CallbackData {
     }
 }
 
-/// Base trait for a Trace
-///
-/// This trait define the general methods required to control an ETW Session
-pub trait TraceBaseTrait {
-    /// Start processing a Trace session
-    ///
-    /// # Note
-    /// This function will spawn the new thread which starts listening for events.
-    ///
-    /// See [ProcessTrace](https://docs.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-processtrace#remarks)
-    fn process(self) -> TraceResult<Self>
-    where
-        Self: Sized;
-
-}
-
 /// Specific trait for a Trace
 ///
 /// This trait defines the specific methods that differentiate from a Kernel to a User Trace
-pub trait TraceTrait: TraceBaseTrait {
+pub trait TraceTrait {
     fn augmented_file_mode() -> u32 {
         0
     }
@@ -141,25 +125,6 @@ pub trait TraceTrait: TraceBaseTrait {
     }
 }
 
-// Hyper Macro to create an impl of the BaseTrace for the Kernel and User Trace
-macro_rules! impl_base_trace {
-    (for $($t: ty),+) => {
-        $(impl TraceBaseTrait for $t {
-            fn process(self) -> TraceResult<Self> {
-                self.etw.reset_event_counter();
-                self.etw.process()?;
-
-                Ok(self)
-            }
-
-            // query_stats
-            // set_default_event_callback
-            // buffers_processed
-        })*
-    }
-}
-
-impl_base_trace!(for UserTrace, KernelTrace);
 impl TraceTrait for UserTrace {}
 
 // TODO: Implement enable_provider function for providers that require call to TraceSetInformation with extended PERFINFO_GROUPMASK
@@ -226,6 +191,15 @@ impl UserTrace {
             properties: TraceProperties::default(),
         }
     }
+
+    /// This is blocking and starts triggerring the callbacks.
+    ///
+    /// Because this call is blocking, you probably want to call this from a background thread.<br/>
+    /// Alternatively, you can call the convenience method [`UserTraceBuilder::start_and_process`], that also spawns a thread to call `process` on.
+    pub fn process(&mut self) -> TraceResult<()> {
+        self.etw.process()
+            .map_err(|e| e.into())
+    }
 }
 
 impl KernelTrace {
@@ -237,6 +211,15 @@ impl KernelTrace {
             callback_data: CallbackData::new(),
             properties: TraceProperties::default(),
         }
+    }
+
+    /// This is blocking and starts triggerring the callbacks.
+    ///
+    /// Because this call is blocking, you probably want to call this from a background thread.<br/>
+    /// Alternatively, you can call the convenience method [`KernelTraceBuilder::start_and_process`], that also spawns a thread to call `process` on.
+    pub fn process(&mut self) -> TraceResult<()> {
+        self.etw.process()
+            .map_err(|e| e.into())
     }
 }
 
@@ -262,8 +245,10 @@ impl UserTraceBuilder {
 
     /// Build the `UserTrace` and start the trace session
     ///
-    /// Windows APIs would call this `Open` the trace.
-    /// You'll still have to call [`UserTrace::process`] to start receiving events
+    /// Internally, this calls the `StartTrace`, `EnableTrace` and `OpenTrace`.
+    ///
+    /// You'll still have to call [`process`] to start receiving events.<br/>
+    /// Alternatively, you can call the convenience method [`start_and_process`], that also spawns a thread to call `process` on.
     pub fn start(self) -> TraceResult<UserTrace> {
         let callback_data = Box::new(self.callback_data);
         let mut etw = evntrace::NativeEtw::start::<UserTrace>(
@@ -281,6 +266,17 @@ impl UserTraceBuilder {
         Ok(UserTrace {
             etw,
         })
+    }
+
+    /// Convenience method that calls [`start`] then [`UserTrace::process`]
+    ///
+    /// `process` is called on a spawned thread, and thus this method does not give any way to retrieve the error of `process` (if any)
+    pub fn start_and_process(self) -> TraceResult<()> {
+        let mut trace = self.start()?;
+
+        std::thread::spawn(move || trace.process());
+
+        Ok(())
     }
 }
 
@@ -337,6 +333,17 @@ impl KernelTraceBuilder {
         Ok(KernelTrace {
             etw,
         })
+    }
+
+    /// Convenience method that calls [`start`] then [`KernelTrace::process`]
+    ///
+    /// `process` is called on a spawned thread, and thus this method does not give any way to retrieve the error of `process` (if any)
+    pub fn start_and_process(self) -> TraceResult<()> {
+        let mut trace = self.start()?;
+
+        std::thread::spawn(move || trace.process());
+
+        Ok(())
     }
 }
 
