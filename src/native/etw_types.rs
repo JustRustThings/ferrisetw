@@ -25,11 +25,9 @@ pub use event_record::EventRecord;
 mod extended_data;
 pub use extended_data::{ExtendedDataItem, EventHeaderExtendedDataItem};
 
-// typedef ULONG64 TRACEHANDLE, *PTRACEHANDLE;
-pub(crate) type TraceHandle = u64;
+pub(crate) type TraceHandle = Etw::PROCESSTRACE_HANDLE;
+pub(crate) type ControlHandle = Etw::CONTROLTRACE_HANDLE;
 pub(crate) type EvenTraceControl = Etw::EVENT_TRACE_CONTROL;
-
-pub const INVALID_TRACE_HANDLE: TraceHandle = u64::MAX;
 
 /// This enum is https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ne-evntrace-trace_query_info_class
 ///
