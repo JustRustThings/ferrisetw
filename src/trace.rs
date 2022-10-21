@@ -4,13 +4,14 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::traits::*;
-use crate::native::etw_types::EventRecord;
+use crate::native::etw_types::{EventRecord, EventTraceProperties};
 use crate::native::{evntrace, version_helper};
+use crate::native::evntrace::{ControlHandle, TraceHandle, start_trace, open_trace, process_trace, enable_provider, control_trace, close_trace};
 use crate::provider::Provider;
 use crate::{provider, utils};
 use crate::schema_locator::SchemaLocator;
 use windows::core::GUID;
-use windows::Win32::System::Diagnostics::Etw;
+use windows::Win32::System::Diagnostics::Etw::{self, EVENT_TRACE_CONTROL_CONVERT_TO_REALTIME};
 
 const KERNEL_LOGGER_NAME: &str = "NT Kernel Logger";
 const SYSTEM_TRACE_CONTROL_GUID: &str = "9e814aad-3204-11d2-9a82-006008a86939";
@@ -67,7 +68,7 @@ pub struct TraceProperties {
 pub struct CallbackData {
     /// Represents the current events handled
     events_handled: AtomicUsize,
-    /// List of Providers associated with the Trace
+    /// List of Providers associated with the Trace. This also owns the callback closures and their state
     providers: Vec<provider::Provider>,
     schema_locator: SchemaLocator,
 }
@@ -158,7 +159,11 @@ impl TraceTrait for KernelTrace {
 /// To stop the session, you can drop this instance
 #[derive(Debug)]
 pub struct UserTrace {
-    etw: evntrace::NativeEtw,
+    //etw: evntrace::NativeEtw,
+    properties: EventTraceProperties,
+    control_handle: ControlHandle,
+    trace_handle: TraceHandle,
+    callback_data: Box<Arc<CallbackData>>,
 }
 
 /// A kernel trace session
@@ -167,7 +172,11 @@ pub struct UserTrace {
 ///
 #[derive(Debug)]
 pub struct KernelTrace {
-    etw: evntrace::NativeEtw,
+    //etw: evntrace::NativeEtw,
+    properties: EventTraceProperties,
+    control_handle: ControlHandle,
+    trace_handle: TraceHandle,
+    callback_data: Box<Arc<CallbackData>>,
 }
 
 pub struct UserTraceBuilder {
@@ -195,9 +204,16 @@ impl UserTrace {
     /// This is blocking and starts triggerring the callbacks.
     ///
     /// Because this call is blocking, you probably want to call this from a background thread.<br/>
-    /// Alternatively, you can call the convenience method [`UserTraceBuilder::start_and_process`], that also spawns a thread to call `process` on.
+    /// Alternatively, you can:
+    /// * call the convenience method [`UserTraceBuilder::start_and_process`], that also spawns a thread to call `process` on.
+    /// * call [`UserTrace::process_from_handle`], that avoids moving the whole `&self` to the new thread.
     pub fn process(&mut self) -> TraceResult<()> {
-        self.etw.process()
+        process_trace(self.trace_handle)
+            .map_err(|e| e.into())
+    }
+
+    pub fn process_from_handle(handle: TraceHandle) -> TraceResult<()> {
+        process_trace(handle)
             .map_err(|e| e.into())
     }
 }
@@ -216,9 +232,16 @@ impl KernelTrace {
     /// This is blocking and starts triggerring the callbacks.
     ///
     /// Because this call is blocking, you probably want to call this from a background thread.<br/>
-    /// Alternatively, you can call the convenience method [`KernelTraceBuilder::start_and_process`], that also spawns a thread to call `process` on.
+    /// Alternatively, you can:
+    /// * call the convenience method [`KernelTraceBuilder::start_and_process`], that also spawns a thread to call `process` on.
+    /// * call [`KernelTrace::process_from_handle`], that avoids moving the whole `&self` to the new thread.
     pub fn process(&mut self) -> TraceResult<()> {
-        self.etw.process()
+        process_trace(self.trace_handle)
+            .map_err(|e| e.into())
+    }
+
+    pub fn process_from_handle(handle: TraceHandle) -> TraceResult<()> {
+        process_trace(handle)
             .map_err(|e| e.into())
     }
 }
@@ -247,36 +270,41 @@ impl UserTraceBuilder {
     ///
     /// Internally, this calls the `StartTrace`, `EnableTrace` and `OpenTrace`.
     ///
-    /// You'll still have to call [`process`] to start receiving events.<br/>
-    /// Alternatively, you can call the convenience method [`start_and_process`], that also spawns a thread to call `process` on.
-    pub fn start(self) -> TraceResult<UserTrace> {
-        let callback_data = Box::new(self.callback_data);
-        let mut etw = evntrace::NativeEtw::start::<UserTrace>(
+    /// You'll still have to call [`process`] (or one of its alternatives) to start receiving events.
+    pub fn start(self) -> TraceResult<(UserTrace, TraceHandle)> {
+        let callback_data = Box::new(Arc::new(self.callback_data));
+        println!("Starting {}", self.name);
+        let (properties, control_handle) = start_trace::<UserTrace>(
             &self.name,
             &self.properties,
             &callback_data)?;
 
         for prov in &callback_data.providers {
-            etw.enable_provider(prov)?;
+            enable_provider(control_handle, prov)?;
             // Note: in case this fails for a provider, we ignore the following providers
         }
 
-        etw.open(&self.name, callback_data)?;
+        let trace_handle = open_trace(&self.name, &callback_data)?;
 
-        Ok(UserTrace {
-            etw,
-        })
+        Ok((UserTrace {
+                properties,
+                control_handle,
+                trace_handle,
+                callback_data,
+            },
+            trace_handle)
+        )
     }
 
     /// Convenience method that calls [`start`] then [`UserTrace::process`]
     ///
     /// `process` is called on a spawned thread, and thus this method does not give any way to retrieve the error of `process` (if any)
-    pub fn start_and_process(self) -> TraceResult<()> {
-        let mut trace = self.start()?;
+    pub fn start_and_process(self) -> TraceResult<UserTrace> {
+        let (trace, trace_handle) = self.start()?;
 
-        std::thread::spawn(move || trace.process());
+        std::thread::spawn(move || UserTrace::process_from_handle(trace_handle));
 
-        Ok(())
+        Ok(trace)
     }
 }
 
@@ -292,10 +320,6 @@ impl KernelTraceBuilder {
         self
     }
 
-    //
-    //
-    // TODO: write some doc
-    //
     /// # Note
     /// Windows API seems to support removing providers, or changing its properties when the session is processing events (see https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-enabletraceex2#remarks)
     /// Currently, this crate only supports defining Providers and their settings when building the trace, because it is easier to ensure memory-safety this way.
@@ -305,17 +329,14 @@ impl KernelTraceBuilder {
         self
     }
 
-    /// Build the `KernelTrace`
+    /// Build the `KernelTrace` and start the trace session
     ///
-    /// Windows APIs would call this `Open` the trace.
-    /// You'll still have to call [`KernelTrace::process`] to start receiving events
-    //
-    //
-    //
-    // name if build? start?
-    pub fn start(self) -> TraceResult<KernelTrace> {
-        let callback_data = Box::new(self.callback_data);
-        let mut etw = evntrace::NativeEtw::start::<KernelTrace>(
+    /// Internally, this calls the `StartTrace`, `EnableTrace` and `OpenTrace`.
+    ///
+    /// You'll still have to call [`process`] (or one of its alternatives) to start receiving events.
+    pub fn start(self) ->  TraceResult<(KernelTrace, TraceHandle)> {
+        let callback_data = Box::new(Arc::new(self.callback_data));
+        let (properties, control_handle) = start_trace::<KernelTrace>(
             &self.name,
             &self.properties,
             &callback_data)?;
@@ -328,22 +349,41 @@ impl KernelTraceBuilder {
 
         // TODO: Implement enable_provider function for providers that require call to TraceSetInformation with extended PERFINFO_GROUPMASK
 
-        etw.open(session_name, callback_data)?;
+        let trace_handle = open_trace(session_name, &callback_data)?;
 
-        Ok(KernelTrace {
-            etw,
-        })
+        Ok((KernelTrace {
+            properties,
+            control_handle,
+            trace_handle,
+            callback_data,
+        },
+        trace_handle)
+    )
     }
 
     /// Convenience method that calls [`start`] then [`KernelTrace::process`]
     ///
     /// `process` is called on a spawned thread, and thus this method does not give any way to retrieve the error of `process` (if any)
-    pub fn start_and_process(self) -> TraceResult<()> {
-        let mut trace = self.start()?;
+    pub fn start_and_process(self) -> TraceResult<KernelTrace> {
+        let (trace, trace_handle) = self.start()?;
 
-        std::thread::spawn(move || trace.process());
+        std::thread::spawn(move || UserTrace::process_from_handle(trace_handle));
 
-        Ok(())
+        Ok(trace)
+    }
+}
+
+impl Drop for UserTrace {
+    fn drop(&mut self) {
+        let _ignored_error_in_drop = close_trace(self.trace_handle);
+        let _ignored_error_in_drop = control_trace(&mut self.properties, self.control_handle, Etw::EVENT_TRACE_CONTROL_STOP);
+    }
+}
+
+impl Drop for KernelTrace {
+    fn drop(&mut self) {
+        let _ignored_error_in_drop = close_trace(self.trace_handle);
+        let _ignored_error_in_drop = control_trace(&mut self.properties, self.trace_handle, Etw::EVENT_TRACE_CONTROL_STOP);
     }
 }
 
