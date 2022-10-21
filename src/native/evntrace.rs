@@ -5,8 +5,13 @@
 //!
 //! This module shouldn't be accessed directly. Modules from the crate level provide a safe API to interact
 //! with the crate
+use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::ffi::c_void;
+
+use once_cell::sync::Lazy;
 
 use windows::Win32::System::Diagnostics::Etw::EVENT_CONTROL_CODE_ENABLE_PROVIDER;
 use windows::core::GUID;
@@ -51,6 +56,34 @@ impl From<std::io::Error> for EvntraceNativeError {
 
 pub(crate) type EvntraceNativeResult<T> = Result<T, EvntraceNativeError>;
 
+/// When a trace is closing, it is possible that every past events have not been processed yet.
+/// These events will still be fed to the callback, **after** the trace has been closed
+/// (see `ERROR_CTX_CLOSE_PENDING` in https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-closetrace#remarks)
+/// Also, there is no way to tell which callback invocation is the last one.
+///
+/// But, we would like to free memory used by the callbacks when we're done!
+/// Since that is not possible, let's discard every callback run after we've called `CloseTrace`.
+/// That's the purpose of this set.
+static VALID_CONTEXTS: ValidContexts = ValidContexts::new();
+struct ValidContexts(Lazy<Mutex<HashSet<u64>>>);
+
+impl ValidContexts {
+    pub const fn new() -> Self {
+        Self(Lazy::new(|| Mutex::new(HashSet::new())))
+    }
+    fn insert(&self, ctx_ptr: *const c_void) {
+        self.0.lock().unwrap().insert(ctx_ptr as u64);
+    }
+
+    fn remove(&self, ctx_ptr: *const c_void) {
+        self.0.lock().unwrap().remove(&(ctx_ptr as u64));
+    }
+
+    pub fn is_valid(&self, ctx_ptr: *const c_void) -> bool {
+        self.0.lock().unwrap().contains(&(ctx_ptr as u64))
+    }
+}
+
 extern "system" fn trace_callback_thunk(p_record: *mut Etw::EVENT_RECORD) {
     match std::panic::catch_unwind(AssertUnwindSafe(|| {
         let record_from_ptr = unsafe {
@@ -59,18 +92,22 @@ extern "system" fn trace_callback_thunk(p_record: *mut Etw::EVENT_RECORD) {
         };
 
         if let Some(event_record) = record_from_ptr {
-            let p_user_context = event_record.user_context().cast::<Arc<CallbackData>>();
-            let user_context = unsafe {
+            let p_user_context = event_record.user_context();
+            if VALID_CONTEXTS.is_valid(p_user_context) == false {
+                return;
+            }
+            let p_callback_data = p_user_context.cast::<Arc<CallbackData>>();
+            let callback_data = unsafe {
                 // Safety:
                 //  * the API of this create guarantees this points to a `TraceData` already created
                 //  * TODO: the API of this create guarantees this `TraceData` has not been dropped
                 //  * TODO: the API of this crate does not guarantee this `TraceData` is not mutated during the trace (e.g. modifying the list of providers)
-                p_user_context.as_ref()
+                p_callback_data.as_ref()
             };
-            if let Some(user_context) = user_context {
+            if let Some(callback_data) = callback_data {
                 // The UserContext is owned by the `NativeEtw` object. When it is dropped, so will the UserContext.
                 // We clone it now, so that the original Arc can be safely dropped at all times, but the callback data (including the closure captured context) will still be alive until the callback ends.
-                let cloned_arc = Arc::clone(user_context);
+                let cloned_arc = Arc::clone(callback_data);
                 cloned_arc.on_event(event_record);
             }
         }
@@ -146,7 +183,9 @@ where
 ///
 /// Microsoft calls this "opening" the trace (and this calls `OpenTraceW`)
 pub fn open_trace(trace_name: &str, callback_data: &Box<Arc<CallbackData>>) -> EvntraceNativeResult<TraceHandle> {
-    let mut log_file = EventTraceLogfile::create(&callback_data, trace_name, trace_callback_thunk);
+    let mut log_file = EventTraceLogfile::create(callback_data, trace_name, trace_callback_thunk);
+
+    VALID_CONTEXTS.insert(log_file.context_ptr());
 
     let session_handle = unsafe {
         // This function modifies the data pointed to by log_file.
@@ -267,10 +306,12 @@ pub fn control_trace(
 /// Close the trace
 ///
 /// It is suggested to stop the trace immediately after `close`ing it (that's what it done in the `impl Drop`), because I'm not sure how sensible it is to call other methods (apart from `stop`) afterwards
-pub fn close_trace(trace_handle: TraceHandle) -> EvntraceNativeResult<()> {
+pub fn close_trace(trace_handle: TraceHandle, callback_data: &Box<Arc<CallbackData>>) -> EvntraceNativeResult<()> {
     match filter_invalid_trace_handles(trace_handle) {
         None => Err(EvntraceNativeError::InvalidHandle),
         Some(handle) => {
+            VALID_CONTEXTS.remove(callback_data.as_ref() as *const Arc<CallbackData> as *const c_void);
+
             let status = unsafe {
                 Etw::CloseTrace(handle)
             };
@@ -292,7 +333,7 @@ pub(crate) fn query_info(class: TraceInformation, buf: &mut [u8]) -> EvntraceNat
         Etw::TraceQueryInformation(
             0,
             TRACE_QUERY_INFO_CLASS(class as i32),
-            buf.as_mut_ptr() as *mut std::ffi::c_void,
+            buf.as_mut_ptr() as *mut c_void,
             buf.len() as u32,
             std::ptr::null_mut(),
         )

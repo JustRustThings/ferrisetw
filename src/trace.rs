@@ -376,14 +376,14 @@ impl KernelTraceBuilder {
 
 impl Drop for UserTrace {
     fn drop(&mut self) {
-        let _ignored_error_in_drop = close_trace(self.trace_handle);
+        let _ignored_error_in_drop = close_trace(self.trace_handle, &self.callback_data);
         let _ignored_error_in_drop = control_trace(&mut self.properties, self.control_handle, Etw::EVENT_TRACE_CONTROL_STOP);
     }
 }
 
 impl Drop for KernelTrace {
     fn drop(&mut self) {
-        let _ignored_error_in_drop = close_trace(self.trace_handle);
+        let _ignored_error_in_drop = close_trace(self.trace_handle, &self.callback_data);
         let _ignored_error_in_drop = control_trace(&mut self.properties, self.trace_handle, Etw::EVENT_TRACE_CONTROL_STOP);
     }
 }
