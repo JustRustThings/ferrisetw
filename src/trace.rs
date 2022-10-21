@@ -217,6 +217,22 @@ impl UserTrace {
         process_trace(handle)
             .map_err(|e| e.into())
     }
+
+    /// Stops the trace
+    ///
+    /// This consumes the trace, that can no longer be used afterwards.
+    /// The same result is achieved by dropping `Self`
+    pub fn stop(mut self) -> TraceResult<()> {
+        self.non_consuming_stop()
+    }
+
+    // This function aims at de-deduplicating code called when stopping a trace.
+    // It is basically [`Self::stop`], without consuming self (because the `impl Drop` only has a `&mut self`, not a `self`)
+    fn non_consuming_stop(&mut self) -> TraceResult<()> {
+        close_trace(self.trace_handle, &self.callback_data)?;
+        control_trace(&mut self.properties, self.control_handle, Etw::EVENT_TRACE_CONTROL_STOP)?;
+        Ok(())
+    }
 }
 
 impl KernelTrace {
@@ -244,6 +260,22 @@ impl KernelTrace {
     pub fn process_from_handle(handle: TraceHandle) -> TraceResult<()> {
         process_trace(handle)
             .map_err(|e| e.into())
+    }
+
+    /// Stops the trace
+    ///
+    /// This consumes the trace, that can no longer be used afterwards.
+    /// The same result is achieved by dropping `Self`
+    pub fn stop(mut self) -> TraceResult<()> {
+        self.non_consuming_stop()
+    }
+
+    // This function aims at de-deduplicating code called when stopping a trace.
+    // It is basically [`Self::stop`], without consuming self (because the `impl Drop` only has a `&mut self`, not a `self`)
+    fn non_consuming_stop(&mut self) -> TraceResult<()> {
+        close_trace(self.trace_handle, &self.callback_data)?;
+        control_trace(&mut self.properties, self.control_handle, Etw::EVENT_TRACE_CONTROL_STOP)?;
+        Ok(())
     }
 }
 
@@ -376,15 +408,13 @@ impl KernelTraceBuilder {
 
 impl Drop for UserTrace {
     fn drop(&mut self) {
-        let _ignored_error_in_drop = close_trace(self.trace_handle, &self.callback_data);
-        let _ignored_error_in_drop = control_trace(&mut self.properties, self.control_handle, Etw::EVENT_TRACE_CONTROL_STOP);
+        let _ignored_error_in_drop = self.non_consuming_stop();
     }
 }
 
 impl Drop for KernelTrace {
     fn drop(&mut self) {
-        let _ignored_error_in_drop = close_trace(self.trace_handle, &self.callback_data);
-        let _ignored_error_in_drop = control_trace(&mut self.properties, self.trace_handle, Etw::EVENT_TRACE_CONTROL_STOP);
+        let _ignored_error_in_drop = self.non_consuming_stop();
     }
 }
 

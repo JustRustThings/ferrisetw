@@ -46,7 +46,7 @@ fn simple_user_dns_trace() {
         })
         .build();
 
-    let mut _dns_trace = UserTrace::new()
+    let mut dns_trace = UserTrace::new()
         .enable(dns_provider)
         .start_and_process()
         .unwrap();
@@ -54,6 +54,7 @@ fn simple_user_dns_trace() {
     generate_dns_events();
 
     passed.assert_passed();
+    dns_trace.stop();
     println!("simple_user_dns_trace passed");
 }
 
@@ -78,7 +79,7 @@ fn test_event_id_filter() {
         })
         .build();
 
-    UserTrace::new()
+    let _trace = UserTrace::new()
         .enable(dns_provider)
         .start_and_process()
         .unwrap();
@@ -87,6 +88,7 @@ fn test_event_id_filter() {
 
     passed1.assert_passed();
     passed2.assert_passed();
+    // Not calling .stop() here, let's just rely on the `impl Drop`
     println!("Test passed");
 }
 
