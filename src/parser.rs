@@ -188,18 +188,16 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                             },
 
                             TdhInType::InTypeUnicodeString => {
-                                let wide_slice = slice_of_u16(remaining_user_buffer)?;
-
                                 let mut l = 0;
-                                for wchar in wide_slice {
-                                    if wchar == &0 {
-                                        l += 1; // include the final null wchar
+                                for bytes in remaining_user_buffer.chunks_exact(2) {
+                                    if bytes[0] == 0 && bytes[1] == 0 {
+                                        l += 2;
                                         break;
                                     }
-                                    l += 1;
+                                    l += 2;
                                 }
-                                return Ok(2 * l)
-                            },
+                                return Ok(l);
+                            }
 
                             _ => (),
                         }
@@ -314,10 +312,15 @@ impl TryParse<String> for Parser<'_, '_> {
         // TODO: Handle errors and type checking better
         let res = match prop_slice.property.in_type() {
             TdhInType::InTypeUnicodeString => {
-                let wide_slice = slice_of_u16(prop_slice.buffer)?;
-                match U16CStr::from_slice(wide_slice) {
-                    Err(_) => return Err(ParserError::PropertyError("Widestring is not null-terminated".into())),
-                    Ok(s) => s.to_string_lossy()
+                let wide_vec = bytes_to_u16_vec(prop_slice.buffer)?;
+
+                match U16CStr::from_slice(&wide_vec) {
+                    Err(_) => {
+                        return Err(ParserError::PropertyError(
+                            "Widestring is not null-terminated".into(),
+                        ))
+                    }
+                    Ok(s) => s.to_string_lossy(),
                 }
             }
             TdhInType::InTypeAnsiString => std::str::from_utf8(prop_slice.buffer)?
@@ -441,29 +444,18 @@ impl TryParse<Vec<u8>> for Parser<'_, '_> {
 // TODO: Implement SocketAddress
 // TODO: Study if we can use primitive types for HexInt64, HexInt32 and Pointer
 
-fn slice_of_u16(input: &[u8]) -> ParserResult<&[u16]> {
+fn bytes_to_u16_vec(input: &[u8]) -> ParserResult<Vec<u16>> {
     if input.len() % 2 != 0 {
-        return Err(ParserError::PropertyError("odd length in bytes for a widestring".into()));
+        return Err(ParserError::PropertyError(
+            "odd length in bytes for a widestring".into(),
+        ));
     }
 
-    let wide_ptr = input.as_ptr() as *const u16;
-    let wide_len = input.len() / 2;
-
-    if wide_ptr.is_null() || is_aligned_to_u16(wide_ptr) == false {
-        return Err(ParserError::PropertyError("Invalid widestring pointer".into()));
+    let mut res = Vec::with_capacity(input.len() / 2);
+    for wide_slice in input.chunks_exact(2) {
+        let two_bytes = wide_slice.try_into().unwrap();
+        res.push(u16::from_le_bytes(two_bytes));
     }
 
-    // Safety: we've juste checked the pointer is
-    //  * non-null
-    //  * correctly aligned
-    let s = unsafe {
-        std::slice::from_raw_parts(wide_ptr, wide_len)
-    };
-    Ok(s)
-}
-
-fn is_aligned_to_u16<T>(p: *const T) -> bool {
-    // ptr::is_aligned is not stable. Let's implement our own
-    let addr = p as usize;
-    addr % 2 == 0
+    Ok(res)
 }
