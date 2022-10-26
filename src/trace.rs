@@ -306,7 +306,6 @@ impl UserTraceBuilder {
     /// You'll still have to call [`process`] (or one of its alternatives) to start receiving events.
     pub fn start(self) -> TraceResult<(UserTrace, TraceHandle)> {
         let callback_data = Box::new(Arc::new(self.callback_data));
-        println!("Starting {}", self.name);
         let (properties, control_handle) = start_trace::<UserTrace>(
             &self.name,
             &self.properties,
