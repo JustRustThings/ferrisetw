@@ -17,14 +17,6 @@ pub enum VersionHelperError {
     IoError(std::io::Error),
 }
 
-impl LastOsError<VersionHelperError> for VersionHelperError {}
-
-impl From<std::io::Error> for VersionHelperError {
-    fn from(err: std::io::Error) -> Self {
-        VersionHelperError::IoError(err)
-    }
-}
-
 pub(crate) type VersionHelperResult<T> = Result<T, VersionHelperError>;
 
 type OsVersionInfo = OSVERSIONINFOEXA;
