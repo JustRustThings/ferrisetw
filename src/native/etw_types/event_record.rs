@@ -3,7 +3,7 @@
 use windows::Win32::System::Diagnostics::Etw::EVENT_RECORD;
 use windows::core::GUID;
 
-use crate::native::etw_types::EventHeaderExtendedDataItem;
+use crate::native::etw_types::extended_data::EventHeaderExtendedDataItem;
 
 /// A read-only wrapper over an [EVENT_RECORD](https://docs.microsoft.com/en-us/windows/win32/api/evntcons/ns-evntcons-event_record)
 #[repr(transparent)]
