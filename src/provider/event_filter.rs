@@ -88,7 +88,7 @@ impl EventFilterDescriptor {
             (*p).FilterIn = BOOLEAN(1);
             (*p).Reserved = 0;
             (*p).Count = eids.len() as u16; // we've checked the array was less than 1024 items
-            &((*p).Events[0]) as *const u16 as *mut u16
+            &mut ((*p).Events[0]) as *mut u16
         };
         if eids.is_empty() {
             // Just to avoid an unintialized data, but should never be accessed anyway since p->Count = 0
