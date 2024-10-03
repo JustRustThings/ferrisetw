@@ -198,6 +198,10 @@ pub struct EventTraceProperties {
     wide_etl_dump_file_path: [u16; TRACE_NAME_MAX_CHARS + 1], // The +1 leaves space for the final null widechar.
 }
 
+// EventTraceProperties contains Etw::EVENT_TRACE_PROPERTIES which contains LoggerThreadId which is a c_void* since windows-rs 0.58.0
+// It should still be safe to send it anyway
+unsafe impl Send for EventTraceProperties {}
+
 impl std::fmt::Debug for EventTraceProperties {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let name = U16CString::from_vec_truncate(self.wide_trace_name).to_string_lossy();
