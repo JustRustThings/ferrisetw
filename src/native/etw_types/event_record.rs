@@ -111,7 +111,7 @@ impl EventRecord {
         crate::native::time::FileTime::from_quad(self.0.EventHeader.TimeStamp).into()
     }
 
-    pub(crate) fn user_buffer(&self) -> &[u8] {
+    pub fn user_buffer(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(self.0.UserData as *mut _, self.0.UserDataLength.into())
         }
