@@ -5,8 +5,10 @@
 //!
 //! This module shouldn't be accessed directly. Modules from the the crate level provide a safe API to interact
 //! with the crate
+use windows::core::BSTR;
+use windows::Win32::System::Variant;
 use windows::{
-    core::{GUID, VARIANT},
+    core::GUID,
     Win32::System::{
         Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED},
         Performance::{ITraceDataProviderCollection, TraceDataProviderCollection},
@@ -38,7 +40,7 @@ pub(crate) unsafe fn get_provider_guid(name: &str) -> ProvidersComResult<GUID> {
     let all_providers: ITraceDataProviderCollection =
         unsafe { CoCreateInstance(&TraceDataProviderCollection, None, CLSCTX_ALL) }?;
 
-    all_providers.GetTraceDataProviders(None)?;
+    all_providers.GetTraceDataProviders(&BSTR::new())?;
 
     let count = all_providers.Count()? as u32;
 
@@ -46,10 +48,10 @@ pub(crate) unsafe fn get_provider_guid(name: &str) -> ProvidersComResult<GUID> {
     let mut guid = None;
 
     while index < count as u32 {
-        let provider = all_providers.get_Item(&VARIANT::from(index))?;
+        let provider = all_providers.get_Item(&Variant::VARIANT::from(index))?;
         let raw_name = provider.DisplayName()?;
 
-        let prov_name = String::from_utf16_lossy(raw_name.as_wide());
+        let prov_name = String::from_utf16_lossy(&raw_name);
 
         index += 1;
         // check if matches, if it does get guid and break
@@ -75,7 +77,7 @@ mod test {
             let guid =
                 get_provider_guid("Microsoft-Windows-Kernel-Process").expect("Error Getting GUID");
 
-            assert_eq!(GUID::from("22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716"), guid);
+            assert_eq!(GUID::from(0x22FB2CD6_0E7B_422B_A0C7_2FAD1FD0E716), guid);
         }
     }
 

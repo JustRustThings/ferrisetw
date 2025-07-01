@@ -24,8 +24,7 @@ fn tlg_tests() {
         FERRIS_PROVIDER.register();
     }
 
-    let binding = tlg::Guid::from_name(PROVIDER_NAME).to_utf8_bytes();
-    let guid = std::str::from_utf8(&binding).unwrap();
+    let guid = tlg::Guid::from_name(PROVIDER_NAME).to_u128();
 
     tlg_multiple_events(guid);
 
@@ -54,7 +53,7 @@ fn generate_tlg_events() {
     }
 }
 
-fn tlg_multiple_events(provider_guid: &str) {
+fn tlg_multiple_events(provider_guid: u128) {
     let passed = Status::new(TestKind::ExpectSuccess);
     let notifier = passed.notifier();
 

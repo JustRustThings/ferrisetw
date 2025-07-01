@@ -33,7 +33,7 @@ use callback_data::CallbackDataFromFile;
 use callback_data::RealTimeCallbackData;
 
 const KERNEL_LOGGER_NAME: &str = "NT Kernel Logger";
-const SYSTEM_TRACE_CONTROL_GUID: &str = "9e814aad-3204-11d2-9a82-006008a86939";
+const SYSTEM_TRACE_CONTROL_GUID: u128 = 0x9e814aad_3204_11d2_9a82_006008a86939;
 const EVENT_TRACE_SYSTEM_LOGGER_MODE: u32 = 0x02000000;
 
 /// Trace module errors
@@ -96,7 +96,6 @@ pub trait TraceTrait: private::PrivateTraceTrait + Sized {
     fn events_handled(&self) -> usize;
 
     fn close(self) -> TraceResult<bool>;
-
 
     // The following are default implementations, that work on both user and kernel traces
 
@@ -734,8 +733,8 @@ mod test {
 
     #[test]
     fn test_enable_multiple_providers() {
-        let prov = Provider::by_guid("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716").build();
-        let prov1 = Provider::by_guid("A0C1853B-5C40-4B15-8766-3CF1C58F985A").build();
+        let prov = Provider::by_guid(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716).build();
+        let prov1 = Provider::by_guid(0xA0C1853B_5C40_4B15_8766_3CF1C58F985A).build();
 
         let trace_builder = UserTrace::new().enable(prov).enable(prov1);
 
