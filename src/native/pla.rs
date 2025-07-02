@@ -77,7 +77,10 @@ mod test {
             let guid =
                 get_provider_guid("Microsoft-Windows-Kernel-Process").expect("Error Getting GUID");
 
-            assert_eq!(GUID::from(0x22FB2CD6_0E7B_422B_A0C7_2FAD1FD0E716), guid);
+            assert_eq!(
+                GUID::from_u128(0x22FB2CD6_0E7B_422B_A0C7_2FAD1FD0E716),
+                guid
+            );
         }
     }
 

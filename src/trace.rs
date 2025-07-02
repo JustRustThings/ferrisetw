@@ -33,7 +33,7 @@ use callback_data::CallbackDataFromFile;
 use callback_data::RealTimeCallbackData;
 
 const KERNEL_LOGGER_NAME: &str = "NT Kernel Logger";
-const SYSTEM_TRACE_CONTROL_GUID: u128 = 0x9e814aad_3204_11d2_9a82_006008a86939;
+const SYSTEM_TRACE_CONTROL_GUID: GUID = GUID::from_u128(0x9e814aad_3204_11d2_9a82_006008a86939);
 const EVENT_TRACE_SYSTEM_LOGGER_MODE: u32 = 0x02000000;
 
 /// Trace module errors
@@ -176,7 +176,7 @@ impl RealTimeTraceTrait for KernelTrace {
         if version_helper::is_win8_or_greater() {
             GUID::new().unwrap_or(GUID::zeroed())
         } else {
-            GUID::from(SYSTEM_TRACE_CONTROL_GUID)
+            SYSTEM_TRACE_CONTROL_GUID
         }
     }
 

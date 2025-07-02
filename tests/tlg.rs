@@ -1,3 +1,4 @@
+use ferrisetw::GUID;
 use tracelogging as tlg;
 
 use ferrisetw::parser::Parser;
@@ -20,13 +21,16 @@ tlg::define_provider!(FERRIS_PROVIDER, "ferrisETW.TraceLoggingTest");
 #[ignore]
 #[test]
 fn tlg_tests() {
+    use std::convert::TryInto;
+
     unsafe {
         FERRIS_PROVIDER.register();
     }
 
-    let guid = tlg::Guid::from_name(PROVIDER_NAME).to_u128();
+    let binding = tlg::Guid::from_name(PROVIDER_NAME).to_utf8_bytes();
+    let guid = std::str::from_utf8(&binding).unwrap();
 
-    tlg_multiple_events(guid);
+    tlg_multiple_events(guid.try_into().unwrap());
 
     FERRIS_PROVIDER.unregister();
 }
@@ -53,7 +57,7 @@ fn generate_tlg_events() {
     }
 }
 
-fn tlg_multiple_events(provider_guid: u128) {
+fn tlg_multiple_events(provider_guid: GUID) {
     let passed = Status::new(TestKind::ExpectSuccess);
     let notifier = passed.notifier();
 
