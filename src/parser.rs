@@ -511,6 +511,10 @@ impl private::TryParse<String> for Parser<'_, '_> {
                             .try_into()
                             .unwrap(),
                     ) as usize;
+                    if str_length <= 0 {
+                        return Ok(String::from(""));
+                    }
+
                     if prop_slice.buffer[std::mem::size_of::<u16>()..].len() < str_length {
                         return Err(ParserError::PropertyError(
                             "invalid counted string length".into(),
