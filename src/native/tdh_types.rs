@@ -104,7 +104,15 @@ impl Property {
         let flags = PropertyFlags::from(property.Flags);
 
         if flags.contains(PropertyFlags::PROPERTY_STRUCT) {
-            Err(PropertyError::UnimplementedType("structure"))
+            // When the property is a struct, we return a default initialized PropertyInfo instead of an error.
+            // This prevents the whole schema from being discarded, allowing the remaining non struct
+            // fields to be parsed successfully. If code later attempts to read the struct field, a
+            // LengthMismatch error will be raised because its length is zero.
+            Ok(Property {
+                name,
+                flags,
+                info: PropertyInfo::default(),
+            })
         } else if flags.contains(PropertyFlags::PROPERTY_HAS_CUSTOM_SCHEMA) {
             Err(PropertyError::UnimplementedType("has custom schema"))
         } else {
