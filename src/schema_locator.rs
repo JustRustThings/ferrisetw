@@ -1,6 +1,6 @@
 //! A way to cache and retrieve Schemas
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 
 use windows::core::GUID;
@@ -86,7 +86,7 @@ impl SchemaKey {
 /// See also the code of `SchemaKey` for more info
 #[derive(Default)]
 pub struct SchemaLocator {
-    schemas: Mutex<HashMap<SchemaKey, Arc<Schema>>>,
+    schemas: Mutex<FxHashMap<SchemaKey, Arc<Schema>>>,
 }
 
 impl std::fmt::Debug for SchemaLocator {
@@ -100,7 +100,7 @@ impl std::fmt::Debug for SchemaLocator {
 impl SchemaLocator {
     pub(crate) fn new() -> Self {
         SchemaLocator {
-            schemas: Mutex::new(HashMap::new()),
+            schemas: Mutex::new(FxHashMap::default()),
         }
     }
 
