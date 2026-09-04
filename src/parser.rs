@@ -13,7 +13,7 @@ use crate::property::PropertySlice;
 use crate::schema::Schema;
 use smallvec::SmallVec;
 use std::cell::RefCell;
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use windows::core::GUID;
 
@@ -120,6 +120,62 @@ impl<'schema, 'record> CachedSlices<'schema, 'record> {
     }
 }
 
+/// Read the value of the `index`th property of this event out of the cache, as a count of things
+///
+/// Returns `None` if that property has not been extracted yet (which happens when it comes _after_
+/// the one being sized), or if it does not hold an integer we can read.
+fn indexed_property_value(cached: &CachedSlices<'_, '_>, index: u16) -> Option<usize> {
+    let slice = cached.slices.get(usize::from(index))?;
+
+    let in_type = match slice.property.info {
+        PropertyInfo::Value { in_type, .. } => in_type,
+        // An array does not hold a single length or count
+        PropertyInfo::Array { .. } => return None,
+    };
+
+    let value: i64 = match (in_type, slice.buffer) {
+        (TdhInType::InTypeInt8, &[a]) => i8::from_ne_bytes([a]).into(),
+        (TdhInType::InTypeUInt8, &[a]) => a.into(),
+        (TdhInType::InTypeInt16, &[a, b]) => i16::from_ne_bytes([a, b]).into(),
+        (TdhInType::InTypeUInt16, &[a, b]) => u16::from_ne_bytes([a, b]).into(),
+        (TdhInType::InTypeInt32, &[a, b, c, d]) => i32::from_ne_bytes([a, b, c, d]).into(),
+        (TdhInType::InTypeUInt32, &[a, b, c, d]) => u32::from_ne_bytes([a, b, c, d]).into(),
+        // Not an integer, or not as wide as its type claims: we cannot read a count out of it
+        _ => return None,
+    };
+
+    // A negative length is nonsense: let the caller fall back to TDH rather than make one up
+    usize::try_from(value).ok()
+}
+
+/// Resolve a property length that the manifest expressed as a reference to a sibling property
+///
+/// Some manifests declare the length of a field by naming another field of the same event, e.g.
+/// the WinInet provider has `<data name="Verb" inType="win:AnsiString" length="_VerbLength"/>`.
+/// The referenced field precedes the one being sized, so it has already been extracted into
+/// `cached`, and reading it from there saves a `TdhGetPropertySize` call for every such property
+/// of every event. (Its value belongs to the record, not to the schema, so there is nothing to
+/// memoise across events -- only this lookup to avoid.)
+///
+/// Returns `None` unless the length is unambiguously a number of bytes, because
+/// `EVENT_PROPERTY_INFO::length` counts *characters* for string types: for those, TDH is the one
+/// that knows how to turn the sibling's value into a size.
+fn indexed_property_length(
+    in_type: TdhInType,
+    cached: &CachedSlices<'_, '_>,
+    index: u16,
+) -> Option<usize> {
+    match in_type {
+        // A byte count
+        TdhInType::InTypeBinary => (),
+        // One byte per character, so the same thing
+        TdhInType::InTypeAnsiString => (),
+        _ => return None,
+    }
+
+    indexed_property_value(cached, index)
+}
+
 /// Represents a Parser
 ///
 /// This structure provides a way to parse an ETW event (= extract its properties).
@@ -201,6 +257,7 @@ impl<'schema, 'record> Parser<'schema, 'record> {
         &self,
         property: &Property,
         remaining_user_buffer: &[u8],
+        cached: &CachedSlices<'schema, 'record>,
     ) -> ParserResult<usize> {
         match property.info {
             PropertyInfo::Value {
@@ -210,7 +267,8 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                 //  * regular case, where property.len() directly makes sense
                 //  * but EVENT_PROPERTY_INFO.length is an union, and (in its lengthPropertyIndex form) can refeer to another field
                 //    e.g.: the WinInet provider manifest has fields such as `<data name="Verb" inType="win:AnsiString" length="_VerbLength"/>`
-                //    In this case, we defer to TDH to know the right length.
+                //    In this case, we read that other field out of the cache, and only defer to
+                //    TDH when we cannot (see `indexed_property_length`).
 
                 // For pointer input type we can immediately infer the size based on the header flags.
                 if in_type == TdhInType::InTypePointer {
@@ -219,11 +277,12 @@ impl<'schema, 'record> Parser<'schema, 'record> {
 
                 let prop_len = match length {
                     PropertyLength::Length(l) => l,
-                    PropertyLength::Index(_) => {
-                        // TODO: optimize to cache the lookup; the problem is that this is called
-                        // whilst the `RefCell` borrow on `CachedSlices` is already active, so
-                        // re-entering `find_property` to cache the related property would panic.
-                        return self.tdh_property_size(property);
+                    PropertyLength::Index(index) => {
+                        return match indexed_property_length(in_type, cached, index) {
+                            Some(l) => Ok(l),
+                            // We cannot work out the length ourselves, defer to TDH
+                            None => self.tdh_property_size(property),
+                        };
                     }
                 };
 
@@ -276,27 +335,30 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                 } else {
                     match length {
                         PropertyLength::Length(l) => l as usize,
-                        PropertyLength::Index(_) => {
-                            // TODO optimize to cache the lookup, the problem is here this is called under an
-                            // exclusive mutex, so attempting to extract and cache a related property will
-                            // deadlock.
-                            return self.tdh_property_size(property);
+                        // This is the length of a single element: it still has to be multiplied by
+                        // the number of elements below
+                        PropertyLength::Index(index) => {
+                            match indexed_property_length(in_type, cached, index) {
+                                Some(l) => l,
+                                None => return self.tdh_property_size(property),
+                            }
                         }
                     }
                 };
 
                 let prop_count = match count {
                     PropertyCount::Count(c) => c as usize,
-                    PropertyCount::Index(_) => {
-                        // TODO: optimize to cache the lookup; the problem is that this is called
-                        // whilst the `RefCell` borrow on `CachedSlices` is already active, so
-                        // re-entering `find_property` to cache the related property would panic.
-                        return self.tdh_property_size(property);
-                    }
+                    PropertyCount::Index(index) => match indexed_property_value(cached, index) {
+                        Some(c) => c,
+                        None => return self.tdh_property_size(property),
+                    },
                 };
 
                 if prop_len > 0 {
-                    return Ok(prop_len * prop_count);
+                    // Both of these may come from the record rather than from the schema, so they
+                    // are not to be trusted: saturate instead of overflowing, and let the bounds
+                    // check on the user buffer reject the result.
+                    return Ok(prop_len.saturating_mul(prop_count));
                 }
 
                 self.tdh_property_size(property)
@@ -346,7 +408,7 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                     Some(s) => s,
                 };
 
-            let prop_size = self.find_property_size(property, remaining_user_buffer)?;
+            let prop_size = self.find_property_size(property, remaining_user_buffer, &cache)?;
             let property_buffer = match remaining_user_buffer.get(..prop_size) {
                 None => {
                     return Err(ParserError::PropertyError(
