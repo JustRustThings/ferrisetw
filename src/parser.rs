@@ -189,6 +189,122 @@ fn counted_size(buffer: &[u8], big_endian: bool) -> Option<usize> {
     Some(2 + usize::from(count))
 }
 
+/// Cross-check of the parser's property sizes against TDH (diagnostic builds only)
+///
+/// With the `shadow_tdh` feature, every size [`Parser`] works out for itself is also asked of
+/// `TdhGetPropertySize`, and disagreements are counted and described. This is how the shortcuts in
+/// `compute_property_size` were validated against real events; it is far too slow for anything else.
+#[cfg(feature = "shadow_tdh")]
+pub mod shadow_tdh {
+    use super::ParserResult;
+    use crate::native::etw_types::event_record::EventRecord;
+    use crate::native::tdh;
+    use crate::native::tdh_types::{Property, PropertyInfo, TdhInType};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    static CHECKED: AtomicU64 = AtomicU64::new(0);
+    static MISMATCHES: AtomicU64 = AtomicU64::new(0);
+    static NEW_RULE_TYPES: AtomicU64 = AtomicU64::new(0);
+    static TDH_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+    static TDH_NS: AtomicU64 = AtomicU64::new(0);
+    static DETAILS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// What the cross-check has seen since the last [`reset`]
+    #[derive(Debug, Clone)]
+    pub struct Stats {
+        /// Property sizes compared
+        pub checked: u64,
+        /// ... of which disagreed with TDH
+        pub mismatches: u64,
+        /// ... of which were of a type the parser only recently learnt to size itself
+        /// (SIDs and counted strings)
+        pub new_rule_types: u64,
+        /// Sizes the parser could not work out and asked TDH for (not counting the cross-check)
+        pub tdh_fallbacks: u64,
+        /// Time spent in `TdhGetPropertySize` for the cross-check
+        pub tdh_ns: u64,
+        /// The first few disagreements, described
+        pub details: Vec<String>,
+    }
+
+    pub fn stats() -> Stats {
+        Stats {
+            checked: CHECKED.load(Relaxed),
+            mismatches: MISMATCHES.load(Relaxed),
+            new_rule_types: NEW_RULE_TYPES.load(Relaxed),
+            tdh_fallbacks: TDH_FALLBACKS.load(Relaxed),
+            tdh_ns: TDH_NS.load(Relaxed),
+            details: DETAILS.lock().map(|d| d.clone()).unwrap_or_default(),
+        }
+    }
+
+    pub fn reset() {
+        for counter in [
+            &CHECKED,
+            &MISMATCHES,
+            &NEW_RULE_TYPES,
+            &TDH_FALLBACKS,
+            &TDH_NS,
+        ] {
+            counter.store(0, Relaxed);
+        }
+        if let Ok(mut details) = DETAILS.lock() {
+            details.clear();
+        }
+    }
+
+    pub(super) fn note_fallback() {
+        TDH_FALLBACKS.fetch_add(1, Relaxed);
+    }
+
+    pub(super) fn check(record: &EventRecord, property: &Property, ours: &ParserResult<usize>) {
+        let started = Instant::now();
+        let theirs = tdh::property_size(record, &property.name_utf16);
+        TDH_NS.fetch_add(started.elapsed().as_nanos() as u64, Relaxed);
+        CHECKED.fetch_add(1, Relaxed);
+
+        let in_type = match property.info {
+            PropertyInfo::Value { in_type, .. } | PropertyInfo::Array { in_type, .. } => in_type,
+        };
+        if matches!(
+            in_type,
+            TdhInType::InTypeSid
+                | TdhInType::InTypeWbemSid
+                | TdhInType::InTypeCountedString
+                | TdhInType::InTypeCountedAnsiString
+                | TdhInType::InTypeReversedCountedString
+                | TdhInType::InTypeReversedCountedAnsiString
+        ) {
+            NEW_RULE_TYPES.fetch_add(1, Relaxed);
+        }
+
+        let agree = match (ours, &theirs) {
+            (Ok(ours), Ok(theirs)) => *ours == *theirs as usize,
+            (Err(_), Err(_)) => true,
+            _ => false,
+        };
+        if !agree {
+            MISMATCHES.fetch_add(1, Relaxed);
+            if let Ok(mut details) = DETAILS.lock() {
+                if details.len() < 16 {
+                    details.push(format!(
+                        "provider {:?} event {} v{} property {:?} ({:?}): ours={:?} tdh={:?}",
+                        record.provider_id(),
+                        record.event_id(),
+                        record.version(),
+                        property.name,
+                        in_type,
+                        ours.as_ref().map_err(|e| e.to_string()),
+                        theirs.map_err(|e| e.to_string()),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Represents a Parser
 ///
 /// This structure provides a way to parse an ETW event (= extract its properties).
@@ -262,11 +378,26 @@ impl<'schema, 'record> Parser<'schema, 'record> {
     ///
     /// This costs a syscall, so it is only a last resort.
     fn tdh_property_size(&self, property: &Property) -> ParserResult<usize> {
+        #[cfg(feature = "shadow_tdh")]
+        shadow_tdh::note_fallback();
         Ok(tdh::property_size(self.record, &property.name_utf16)? as usize)
     }
 
-    #[allow(clippy::len_zero)]
+    /// Size, in bytes, of `property` in this record
     fn find_property_size(
+        &self,
+        property: &Property,
+        remaining_user_buffer: &[u8],
+        cached: &CachedSlices<'schema, 'record>,
+    ) -> ParserResult<usize> {
+        let size = self.compute_property_size(property, remaining_user_buffer, cached);
+        #[cfg(feature = "shadow_tdh")]
+        shadow_tdh::check(self.record, property, &size);
+        size
+    }
+
+    #[allow(clippy::len_zero)]
+    fn compute_property_size(
         &self,
         property: &Property,
         remaining_user_buffer: &[u8],

@@ -15,6 +15,9 @@ repository = "https://github.com/n4r1b/ferrisetw"
 # Enable the conversion of timestamps to time::OffsetDateTime
 time_rs = ["time"]
 serde = [ "dep:serde", "time?/serde", "time?/serde-human-readable" ]
+# Diagnostic: cross-check every property size the parser computes itself against TdhGetPropertySize.
+# Slow; only for validating the parser's shortcuts (see `parser::shadow_tdh`).
+shadow_tdh = []
 
 [dependencies]
 windows = { version = "0.62.2", features = [
