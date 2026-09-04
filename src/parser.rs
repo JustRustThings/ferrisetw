@@ -554,6 +554,36 @@ impl_try_parse_primitive_array!(i32);
 impl_try_parse_primitive_array!(u64);
 impl_try_parse_primitive_array!(i64);
 
+/// Decode a nul-terminated UTF-16 property into a `String`
+///
+/// The record's buffer is not aligned for `u16`, so the code units are read out of it pair by pair
+/// rather than through a slice cast -- there is no need for an aligned copy, the decoder takes any
+/// iterator. The `String` is reserved at one byte per code unit: that is exact for ASCII, which is
+/// what property strings (paths, names, keys) almost always are, so the common case is a single
+/// allocation of the right size. Non-ASCII text needs up to 1.5x that and grows once.
+fn utf16_property_to_string(bytes: &[u8]) -> ParserResult<String> {
+    if bytes.len() % 2 != 0 {
+        return Err(ParserError::PropertyError(
+            "odd length in bytes for a wide string".into(),
+        ));
+    }
+
+    // Drop the nul terminator if there is one: strings whose length the manifest declares do not
+    // carry one, so it cannot be assumed. Only one is dropped, as has always been the case here.
+    let bytes = match bytes {
+        [head @ .., 0, 0] => head,
+        _ => bytes,
+    };
+
+    let units = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]));
+
+    let mut out = String::with_capacity(bytes.len() / 2);
+    out.extend(widestring::decode_utf16_lossy(units));
+    Ok(out)
+}
+
 /// The `String` impl of the `TryParse` trait should be used to retrieve the following [TdhInTypes]:
 ///
 /// * InTypeUnicodeString
@@ -585,35 +615,7 @@ impl private::TryParse<String> for Parser<'_, '_> {
 
         match prop_slice.property.info {
             PropertyInfo::Value { in_type, .. } => match in_type {
-                TdhInType::InTypeUnicodeString => {
-                    if prop_slice.buffer.len() % 2 != 0 {
-                        return Err(ParserError::PropertyError(
-                            "odd length in bytes for a wide string".into(),
-                        ));
-                    }
-
-                    // std::slice::from_raw_parts requires a pointer to be aligned, but we can't
-                    // guarantee that the buffer is aligned. In testing, I found that the buffer
-                    // is in fact never aligned appropriately, so a cheap workaround is to copy
-                    // the buffer into a new Vec<u16> and use that as the source for the slice
-                    // until we can find a better solution.
-                    let mut aligned_buffer = Vec::with_capacity(prop_slice.buffer.len() / 2);
-                    for chunk in prop_slice.buffer.chunks_exact(2) {
-                        let part = u16::from_ne_bytes([chunk[0], chunk[1]]);
-                        aligned_buffer.push(part);
-                    }
-
-                    let mut wide = aligned_buffer.as_slice();
-
-                    match wide.last() {
-                        // remove the null terminator from the slice
-                        Some(c) if c == &0 => wide = &wide[..wide.len() - 1],
-                        _ => (),
-                    }
-
-                    // Decode UTF-16 to String
-                    Ok(widestring::decode_utf16_lossy(wide.iter().copied()).collect::<String>())
-                }
+                TdhInType::InTypeUnicodeString => utf16_property_to_string(prop_slice.buffer),
                 TdhInType::InTypeAnsiString => {
                     let string = std::str::from_utf8(prop_slice.buffer)?;
                     Ok(string.trim_matches(char::default()).to_string())
@@ -626,39 +628,11 @@ impl private::TryParse<String> for Parser<'_, '_> {
                 TdhInType::InTypeCountedString => unimplemented!(),
                 TdhInType::InTypeReversedCountedAnsiString => unimplemented!(),
                 TdhInType::InTypeReversedCountedString => {
-                    if prop_slice.buffer.len() < 2 {
-                        return Err(ParserError::PropertyError(
-                            "counted string does not have length".into(),
-                        ));
-                    }
-                    let str_length = u16::from_be_bytes(
-                        prop_slice.buffer[..std::mem::size_of::<u16>()]
-                            .try_into()
-                            .unwrap(),
-                    ) as usize;
-                    if str_length <= 0 {
-                        return Ok(String::from(""));
-                    }
-
-                    if prop_slice.buffer[std::mem::size_of::<u16>()..].len() < str_length {
-                        return Err(ParserError::PropertyError(
-                            "invalid counted string length".into(),
-                        ));
-                    }
-
-                    let mut aligned_buffer = Vec::with_capacity(prop_slice.buffer.len() / 2 - 2);
-                    for chunk in prop_slice.buffer.chunks_exact(2).skip(1) {
-                        let part = u16::from_ne_bytes([chunk[0], chunk[1]]);
-                        aligned_buffer.push(part);
-                    }
-                    let mut wide = aligned_buffer.as_slice();
-
-                    match wide.last() {
-                        // remove the null terminator from the slice
-                        Some(c) if c == &0 => wide = &wide[..wide.len() - 1],
-                        _ => (),
-                    }
-                    Ok(widestring::decode_utf16_lossy(wide.iter().copied()).collect::<String>())
+                    let string = prop_slice
+                        .buffer
+                        .get(2..)
+                        .ok_or(ParserError::LengthMismatch)?;
+                    utf16_property_to_string(string)
                 }
                 _ => Err(ParserError::InvalidType),
             },
@@ -844,3 +818,69 @@ impl private::TryParse<Vec<u8>> for Parser<'_, '_> {
 
 // TODO: Implement SocketAddress
 // TODO: Study if we can use primitive types for HexInt64, HexInt32 and Pointer
+
+#[cfg(test)]
+mod test {
+    use super::utf16_property_to_string;
+
+    fn utf16(s: &str, terminated: bool) -> Vec<u8> {
+        let mut bytes: Vec<u8> = s
+            .encode_utf16()
+            .flat_map(|unit| unit.to_ne_bytes())
+            .collect();
+        if terminated {
+            bytes.extend_from_slice(&[0, 0]);
+        }
+        bytes
+    }
+
+    #[test]
+    fn decodes_ascii_with_and_without_terminator() {
+        let path = "C:\\Windows\\System32\\ntdll.dll";
+        assert_eq!(utf16_property_to_string(&utf16(path, true)).unwrap(), path);
+        assert_eq!(
+            utf16_property_to_string(&utf16("ImageName", false)).unwrap(),
+            "ImageName"
+        );
+    }
+
+    #[test]
+    fn ascii_is_a_single_exact_allocation() {
+        let decoded = utf16_property_to_string(&utf16("HKLM\\SOFTWARE\\Microsoft", true)).unwrap();
+        assert_eq!(decoded.capacity(), decoded.len());
+    }
+
+    #[test]
+    fn decodes_non_ascii() {
+        for text in ["héllo wörld", "日本語", "🦀 crab"] {
+            assert_eq!(utf16_property_to_string(&utf16(text, true)).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn unpaired_surrogate_is_replaced() {
+        let mut bytes = utf16("ab", false);
+        bytes.extend_from_slice(&0xD800u16.to_ne_bytes());
+        bytes.extend_from_slice(&[0, 0]);
+        assert_eq!(utf16_property_to_string(&bytes).unwrap(), "ab\u{FFFD}");
+    }
+
+    #[test]
+    fn empty_and_terminator_only() {
+        assert_eq!(utf16_property_to_string(&[]).unwrap(), "");
+        assert_eq!(utf16_property_to_string(&[0, 0]).unwrap(), "");
+    }
+
+    #[test]
+    fn only_one_terminator_is_stripped() {
+        // Fixed-length fields are padded with nuls, which have always been kept: pin that
+        let mut bytes = utf16("ab", true);
+        bytes.extend_from_slice(&[0, 0]);
+        assert_eq!(utf16_property_to_string(&bytes).unwrap(), "ab\0");
+    }
+
+    #[test]
+    fn odd_length_is_an_error() {
+        assert!(utf16_property_to_string(&[0x61, 0, 0x62]).is_err());
+    }
+}
