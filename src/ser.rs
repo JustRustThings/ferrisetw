@@ -248,14 +248,13 @@ impl serde::ser::Serialize for EventSer<'_, '_> {
         S: serde::Serializer,
     {
         let mut len: usize = 0;
-        let props = match self
-            .schema
-            .try_properties()
-            .map_err(serde::ser::Error::custom)
-        {
-            Err(e) if self.options.fail_unimplemented => return Err(e),
+        let props = match self.schema.try_properties() {
             Ok(p) => p,
-            _ => &[],
+            // Only build the error when it is going to be returned: serde's `Error::custom`
+            // allocates its message, and this runs for every event whose schema has a property
+            // of a type we do not implement
+            Err(e) if self.options.fail_unimplemented => return Err(serde::ser::Error::custom(e)),
+            Err(_) => &[],
         };
 
         for prop in props {
