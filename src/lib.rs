@@ -122,7 +122,6 @@ pub mod schema;
 pub mod schema_locator;
 pub mod ser;
 pub mod trace;
-mod traits;
 mod utils;
 
 pub(crate) type EtwCallback = Box<dyn FnMut(&EventRecord, &SchemaLocator) + Send + Sync + 'static>;

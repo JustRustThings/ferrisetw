@@ -151,6 +151,13 @@ impl<'schema, 'record> Parser<'schema, 'record> {
         }
     }
 
+    /// Ask TDH for the size of a property we were not able to size ourselves
+    ///
+    /// This costs a syscall, so it is only a last resort.
+    fn tdh_property_size(&self, property: &Property) -> ParserResult<usize> {
+        Ok(tdh::property_size(self.record, &property.name_utf16)? as usize)
+    }
+
     #[allow(clippy::len_zero)]
     fn find_property_size(
         &self,
@@ -178,7 +185,7 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                         // TODO: optimize to cache the lookup; the problem is that this is called
                         // whilst the `RefCell` borrow on `CachedSlices` is already active, so
                         // re-entering `find_property` to cache the related property would panic.
-                        return Ok(tdh::property_size(self.record, &property.name)? as usize);
+                        return self.tdh_property_size(property);
                     }
                 };
 
@@ -217,7 +224,7 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                     _ => (),
                 }
 
-                Ok(tdh::property_size(self.record, &property.name)? as usize)
+                self.tdh_property_size(property)
             }
             PropertyInfo::Array {
                 in_type,
@@ -235,7 +242,7 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                             // TODO optimize to cache the lookup, the problem is here this is called under an
                             // exclusive mutex, so attempting to extract and cache a related property will
                             // deadlock.
-                            return Ok(tdh::property_size(self.record, &property.name)? as usize);
+                            return self.tdh_property_size(property);
                         }
                     }
                 };
@@ -246,7 +253,7 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                         // TODO: optimize to cache the lookup; the problem is that this is called
                         // whilst the `RefCell` borrow on `CachedSlices` is already active, so
                         // re-entering `find_property` to cache the related property would panic.
-                        return Ok(tdh::property_size(self.record, &property.name)? as usize);
+                        return self.tdh_property_size(property);
                     }
                 };
 
@@ -254,7 +261,7 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                     return Ok(prop_len * prop_count);
                 }
 
-                Ok(tdh::property_size(self.record, &property.name)? as usize)
+                self.tdh_property_size(property)
             }
         }
     }
