@@ -435,10 +435,20 @@ impl PropSerable for PropertyInfo {
                         TdhInType::InTypeSid => Some(PropSer(PropHandler::String)),
                         TdhInType::InTypeHexInt32 => Some(PropSer(PropHandler::Int32)),
                         TdhInType::InTypeHexInt64 => Some(PropSer(PropHandler::Int64)),
-                        TdhInType::InTypeCountedString => None, // TODO
-                        TdhInType::InTypeCountedAnsiString => None,
-                        TdhInType::InTypeReversedCountedString => None,
-                        TdhInType::InTypeReversedCountedAnsiString => None,
+                        TdhInType::InTypeWbemSid => Some(PropSer(PropHandler::String)),
+                        TdhInType::InTypeCountedString
+                        | TdhInType::InTypeCountedAnsiString
+                        | TdhInType::InTypeReversedCountedString
+                        | TdhInType::InTypeReversedCountedAnsiString => {
+                            Some(PropSer(PropHandler::String))
+                        }
+                        // The parser does not know how to read these (yet)
+                        TdhInType::InTypeNonNullTerminatedString
+                        | TdhInType::InTypeNonNullTerminatedAnsiString
+                        | TdhInType::InTypeUnicodeChar
+                        | TdhInType::InTypeAnsiChar
+                        | TdhInType::InTypeSizeT
+                        | TdhInType::InTypeHexDump => None,
                     },
                 }
             }

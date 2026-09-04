@@ -176,6 +176,19 @@ fn indexed_property_length(
     indexed_property_value(cached, index)
 }
 
+/// Size of the counted string at the start of `buffer`: a 16-bit byte count, then that many bytes
+///
+/// The count is little-endian for the plain counted types and big-endian for the "reversed" ones.
+fn counted_size(buffer: &[u8], big_endian: bool) -> Option<usize> {
+    let prefix = [*buffer.first()?, *buffer.get(1)?];
+    let count = if big_endian {
+        u16::from_be_bytes(prefix)
+    } else {
+        u16::from_le_bytes(prefix)
+    };
+    Some(2 + usize::from(count))
+}
+
 /// Represents a Parser
 ///
 /// This structure provides a way to parse an ETW event (= extract its properties).
@@ -317,6 +330,35 @@ impl<'schema, 'record> Parser<'schema, 'record> {
                             l += 2;
                         }
                         return Ok(l);
+                    }
+                    // A SID says in its own header how many sub-authorities it has. A header
+                    // that is not well-formed falls through to TDH, which fails as it always has.
+                    TdhInType::InTypeSid => {
+                        if let Ok(size) = sddl::sid_size(remaining_user_buffer) {
+                            return Ok(size);
+                        }
+                    }
+                    // A TOKEN_USER -- two pointer-sized fields, in the event's pointer size --
+                    // precedes the SID. This is how the kernel logger's Process events carry it.
+                    TdhInType::InTypeWbemSid => {
+                        let skip = 2 * self.record.pointer_size();
+                        if let Some(Ok(size)) =
+                            remaining_user_buffer.get(skip..).map(sddl::sid_size)
+                        {
+                            return Ok(skip + size);
+                        }
+                    }
+                    // A 16-bit byte count, then the string
+                    TdhInType::InTypeCountedString | TdhInType::InTypeCountedAnsiString => {
+                        if let Some(size) = counted_size(remaining_user_buffer, false) {
+                            return Ok(size);
+                        }
+                    }
+                    TdhInType::InTypeReversedCountedString
+                    | TdhInType::InTypeReversedCountedAnsiString => {
+                        if let Some(size) = counted_size(remaining_user_buffer, true) {
+                            return Ok(size);
+                        }
                     }
                     _ => (),
                 }
@@ -621,14 +663,30 @@ impl private::TryParse<String> for Parser<'_, '_> {
                     Ok(string.trim_matches(char::default()).to_string())
                 }
                 TdhInType::InTypeSid => Ok(sddl::convert_sid_to_string(prop_slice.buffer)?),
-                TdhInType::InTypeCountedString => unimplemented!(),
-                TdhInType::InTypeReversedCountedAnsiString => unimplemented!(),
-                TdhInType::InTypeReversedCountedString => {
+                TdhInType::InTypeWbemSid => {
+                    // Skip the TOKEN_USER in front of the SID
+                    let sid = prop_slice
+                        .buffer
+                        .get(2 * self.record.pointer_size()..)
+                        .ok_or(ParserError::LengthMismatch)?;
+                    Ok(sddl::convert_sid_to_string(sid)?)
+                }
+                // Skip the 16-bit count in front of the string
+                TdhInType::InTypeCountedString | TdhInType::InTypeReversedCountedString => {
                     let string = prop_slice
                         .buffer
                         .get(2..)
                         .ok_or(ParserError::LengthMismatch)?;
                     utf16_property_to_string(string)
+                }
+                TdhInType::InTypeCountedAnsiString | TdhInType::InTypeReversedCountedAnsiString => {
+                    let string = prop_slice
+                        .buffer
+                        .get(2..)
+                        .ok_or(ParserError::LengthMismatch)?;
+                    Ok(std::str::from_utf8(string)?
+                        .trim_matches(char::default())
+                        .to_string())
                 }
                 _ => Err(ParserError::InvalidType),
             },
@@ -817,7 +875,19 @@ impl private::TryParse<Vec<u8>> for Parser<'_, '_> {
 
 #[cfg(test)]
 mod test {
-    use super::utf16_property_to_string;
+    use super::{counted_size, utf16_property_to_string};
+
+    #[test]
+    fn counted_string_size_is_prefix_plus_count() {
+        let utf16_abc = [6, 0, b'a', 0, b'b', 0, b'c', 0];
+        assert_eq!(counted_size(&utf16_abc, false), Some(8));
+        let utf16_abc_big_endian_count = [0, 6, b'a', 0, b'b', 0, b'c', 0];
+        assert_eq!(counted_size(&utf16_abc_big_endian_count, true), Some(8));
+        // The size is taken from the prefix alone; the caller bounds-checks the body
+        assert_eq!(counted_size(&[0xFF, 0xFF], false), Some(2 + 0xFFFF));
+        assert_eq!(counted_size(&[6], false), None);
+        assert_eq!(counted_size(&[], false), None);
+    }
 
     fn utf16(s: &str, terminated: bool) -> Vec<u8> {
         let mut bytes: Vec<u8> = s

@@ -219,10 +219,17 @@ pub enum TdhInType {
     InTypeSid,        // Field size determined by the first few bytes of the field
     InTypeHexInt32,
     InTypeHexInt64,
-    InTypeCountedString = 300,
-    InTypeCountedAnsiString,
-    InTypeReversedCountedString,
+    InTypeCountedString = 300, // A 16-bit byte count, then the UTF-16 string
+    InTypeCountedAnsiString,   // A 16-bit byte count, then the string
+    InTypeReversedCountedString, // As above, with a big-endian count
     InTypeReversedCountedAnsiString,
+    InTypeNonNullTerminatedString,
+    InTypeNonNullTerminatedAnsiString,
+    InTypeUnicodeChar,
+    InTypeAnsiChar,
+    InTypeSizeT,
+    InTypeHexDump,
+    InTypeWbemSid, // A TOKEN_USER (two pointer-sized fields), then the SID
 }
 
 /// Represent a TDH_OUT_TYPE
