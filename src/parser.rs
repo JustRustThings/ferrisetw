@@ -307,12 +307,28 @@ impl<'schema, 'record> Parser<'schema, 'record> {
     fn find_property(&self, name: &str) -> ParserResult<PropertySlice<'schema, 'record>> {
         let mut cache = self.cache.borrow_mut();
 
-        // We may have extracted this property already
-        if let Some(p) = cache.get(name) {
-            return Ok(p);
+        let last_cached_property = cache.slices.len();
+
+        // Callers usually walk an event's properties in schema order, so the one being asked for
+        // is very often the one right after the last extracted -- which cannot be in the cache.
+        // Recognising that costs a single comparison, where searching the cache first costs one
+        // per property already extracted, i.e. quadratically many over the whole event.
+        //
+        // Note that it cannot be returned right away: its slice of the record is not known until
+        // it has been sized. The loop below does exactly that, starting with this very property,
+        // and returns it as soon as it is extracted.
+        let wanted_is_next = self
+            .properties
+            .get(last_cached_property)
+            .is_some_and(|property| property.name == name);
+
+        if !wanted_is_next {
+            // We may have extracted this property already
+            if let Some(p) = cache.get(name) {
+                return Ok(p);
+            }
         }
 
-        let last_cached_property = cache.slices.len();
         let properties_not_parsed_yet = match self.properties.get(last_cached_property..) {
             Some(s) => s,
             // If we've parsed every property already, that means no property matches this name
