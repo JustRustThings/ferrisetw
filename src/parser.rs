@@ -620,11 +620,7 @@ impl private::TryParse<String> for Parser<'_, '_> {
                     let string = std::str::from_utf8(prop_slice.buffer)?;
                     Ok(string.trim_matches(char::default()).to_string())
                 }
-                TdhInType::InTypeSid => {
-                    let string =
-                        sddl::convert_sid_to_string(prop_slice.buffer.as_ptr() as *const _)?;
-                    Ok(string)
-                }
+                TdhInType::InTypeSid => Ok(sddl::convert_sid_to_string(prop_slice.buffer)?),
                 TdhInType::InTypeCountedString => unimplemented!(),
                 TdhInType::InTypeReversedCountedAnsiString => unimplemented!(),
                 TdhInType::InTypeReversedCountedString => {
