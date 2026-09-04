@@ -436,6 +436,9 @@ impl PropSerable for PropertyInfo {
                         TdhInType::InTypeHexInt32 => Some(PropSer(PropHandler::Int32)),
                         TdhInType::InTypeHexInt64 => Some(PropSer(PropHandler::Int64)),
                         TdhInType::InTypeCountedString => None, // TODO
+                        TdhInType::InTypeCountedAnsiString => None,
+                        TdhInType::InTypeReversedCountedString => None,
+                        TdhInType::InTypeReversedCountedAnsiString => None,
                     },
                 }
             }
