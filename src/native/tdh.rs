@@ -10,8 +10,7 @@ use std::alloc::Layout;
 use super::etw_types::*;
 use crate::native::etw_types::event_record::EventRecord;
 use crate::native::tdh_types::Property;
-use crate::traits::*;
-use widestring::U16CStr;
+use widestring::{U16CStr, U16CString};
 use windows::core::GUID;
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
 use windows::Win32::System::Diagnostics::Etw::{
@@ -57,15 +56,15 @@ unsafe impl Send for TraceEventInfo {}
 // Safety: see above
 unsafe impl Sync for TraceEventInfo {}
 
-/// Extract a null-terminated wide-string at a given offset within a buffer.
+/// Copy the null-terminated wide-string at a given offset within a buffer.
 ///
-/// The wide-string is converted with loss to a String. If buffer
-/// is null or offset is zero, None is returned.
+/// If buffer is null or offset is zero, None is returned. The string is copied out, so nothing
+/// borrowed from the buffer escapes: the buffer only has to be valid for the duration of the call.
 ///
 /// Safety:
 ///  * the buffer must entirely contain a null-terminated wide string
 ///    located at the given offset
-unsafe fn extract_utf16_string(buffer: *const u8, offset: usize) -> Option<String> {
+unsafe fn extract_utf16_cstring(buffer: *const u8, offset: usize) -> Option<U16CString> {
     if offset == 0 || buffer.is_null() {
         return None;
     }
@@ -82,9 +81,20 @@ unsafe fn extract_utf16_string(buffer: *const u8, offset: usize) -> Option<Strin
         //  * we trust the string is null-terminated
         //  * we trust the string entirely fits within the given buffer
         //  * we will not mutate the string
+        //  * the reference does not outlive this function: it is copied right below
         U16CStr::from_ptr_str(ptr_str as *const u16)
     };
-    return Some(wide_str.to_string_lossy());
+    Some(wide_str.to_ucstring())
+}
+
+/// Extract a null-terminated wide-string at a given offset within a buffer.
+///
+/// The wide-string is converted with loss to a String. If buffer
+/// is null or offset is zero, None is returned.
+///
+/// Safety: see [`extract_utf16_cstring`]
+unsafe fn extract_utf16_string(buffer: *const u8, offset: usize) -> Option<String> {
+    unsafe { extract_utf16_cstring(buffer, offset) }.map(|s| s.to_string_lossy())
 }
 
 impl TraceEventInfo {
@@ -268,17 +278,21 @@ impl<'info> Iterator for PropertyIterator<'info> {
         //  * if te_info_data is null, we'll get None
         //  * otherwise we trust Microsoft for providing consistent and correctly aligned data
         let property_name =
-            unsafe { extract_utf16_string(te_info_data, curr_prop.NameOffset as usize)? };
+            unsafe { extract_utf16_cstring(te_info_data, curr_prop.NameOffset as usize)? };
 
         self.next_index += 1;
         Some(Property::new(property_name, curr_prop))
     }
 }
 
-pub fn property_size(event: &EventRecord, name: &str) -> TdhNativeResult<u32> {
+/// Ask TDH for the size (in bytes) that a property takes in the given event
+///
+/// `name` is the property name as UTF-16: that is what the Windows API wants, and every
+/// [`Property`] carries a ready-made copy of its name in that encoding, so no conversion (and no
+/// allocation) is needed on this path.
+pub fn property_size(event: &EventRecord, name: &U16CStr) -> TdhNativeResult<u32> {
     let mut property_size = 0;
 
-    let name = name.into_utf16();
     let desc = Etw::PROPERTY_DATA_DESCRIPTOR {
         ArrayIndex: u32::MAX,
         PropertyName: name.as_ptr() as u64,

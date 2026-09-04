@@ -125,13 +125,47 @@ impl serde::ser::Serialize for EventSerializer<'_> {
 
 struct GUIDExt(GUID);
 
+/// The text form of a GUID, `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`, exactly as its `Debug` prints it
+///
+/// Written into a fixed buffer rather than through `format!`, which has no size estimate for a bare
+/// `{:?}` and so starts an empty `String` and grows it through every piece of the `Debug` output:
+/// four allocations per GUID property of every event, where this needs none.
+fn guid_text(guid: &GUID) -> [u8; 36] {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut text = [b'-'; 36];
+    let mut put = |at: usize, byte: u8| {
+        text[at] = HEX[usize::from(byte >> 4)];
+        text[at + 1] = HEX[usize::from(byte & 0xf)];
+    };
+
+    let [a, b, c, d] = guid.data1.to_be_bytes();
+    put(0, a);
+    put(2, b);
+    put(4, c);
+    put(6, d);
+    let [a, b] = guid.data2.to_be_bytes();
+    put(9, a);
+    put(11, b);
+    let [a, b] = guid.data3.to_be_bytes();
+    put(14, a);
+    put(16, b);
+    put(19, guid.data4[0]);
+    put(21, guid.data4[1]);
+    for (i, byte) in guid.data4[2..].iter().enumerate() {
+        put(24 + 2 * i, *byte);
+    }
+    text
+}
+
 impl serde::ser::Serialize for GUIDExt {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::ser::Serializer,
     {
         if serializer.is_human_readable() {
-            return serializer.serialize_str(&format!("{:?}", self.0));
+            let text = guid_text(&self.0);
+            // Cannot fail: the buffer holds nothing but ASCII hex digits and dashes
+            return serializer.serialize_str(std::str::from_utf8(&text).unwrap_or_default());
         }
 
         (self.0.data1, self.0.data2, self.0.data3, self.0.data4).serialize(serializer)
@@ -248,14 +282,13 @@ impl serde::ser::Serialize for EventSer<'_, '_> {
         S: serde::Serializer,
     {
         let mut len: usize = 0;
-        let props = match self
-            .schema
-            .try_properties()
-            .map_err(serde::ser::Error::custom)
-        {
-            Err(e) if self.options.fail_unimplemented => return Err(e),
+        let props = match self.schema.try_properties() {
             Ok(p) => p,
-            _ => &[],
+            // Only build the error when it is going to be returned: serde's `Error::custom`
+            // allocates its message, and this runs for every event whose schema has a property
+            // of a type we do not implement
+            Err(e) if self.options.fail_unimplemented => return Err(serde::ser::Error::custom(e)),
+            Err(_) => &[],
         };
 
         for prop in props {
@@ -435,7 +468,20 @@ impl PropSerable for PropertyInfo {
                         TdhInType::InTypeSid => Some(PropSer(PropHandler::String)),
                         TdhInType::InTypeHexInt32 => Some(PropSer(PropHandler::Int32)),
                         TdhInType::InTypeHexInt64 => Some(PropSer(PropHandler::Int64)),
-                        TdhInType::InTypeCountedString => None, // TODO
+                        TdhInType::InTypeWbemSid => Some(PropSer(PropHandler::String)),
+                        TdhInType::InTypeCountedString
+                        | TdhInType::InTypeCountedAnsiString
+                        | TdhInType::InTypeReversedCountedString
+                        | TdhInType::InTypeReversedCountedAnsiString => {
+                            Some(PropSer(PropHandler::String))
+                        }
+                        // The parser does not know how to read these (yet)
+                        TdhInType::InTypeNonNullTerminatedString
+                        | TdhInType::InTypeNonNullTerminatedAnsiString
+                        | TdhInType::InTypeUnicodeChar
+                        | TdhInType::InTypeAnsiChar
+                        | TdhInType::InTypeSizeT
+                        | TdhInType::InTypeHexDump => None,
                     },
                 }
             }
@@ -458,5 +504,25 @@ impl PropSerable for PropertyInfo {
 impl PropSerable for Property {
     fn get_parser(&self) -> Option<PropSer> {
         self.info.get_parser()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::guid_text;
+    use std::convert::TryFrom;
+    use windows::core::GUID;
+
+    #[test]
+    fn guid_text_matches_debug() {
+        for guid in [
+            GUID::try_from("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716").unwrap(),
+            GUID::try_from("00000000-0000-0000-0000-000000000000").unwrap(),
+            GUID::try_from("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap(),
+            GUID::try_from("6ad52b32-d609-4be9-ae07-ce8dae937e39").unwrap(),
+        ] {
+            let text = guid_text(&guid);
+            assert_eq!(std::str::from_utf8(&text).unwrap(), format!("{:?}", guid));
+        }
     }
 }

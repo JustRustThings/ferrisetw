@@ -11,6 +11,7 @@
 //! [Property]: crate::native::tdh_types::Property
 use num_traits::FromPrimitive;
 
+use widestring::U16CString;
 use windows::Win32::System::Diagnostics::Etw;
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,12 @@ impl Default for PropertyInfo {
 pub struct Property {
     /// Name of the Property
     pub name: String,
+    /// The same name, still UTF-16 encoded and nul-terminated, exactly as TDH gave it to us
+    ///
+    /// The Windows functions that take a property name (e.g. `TdhGetPropertySize`) expect UTF-16,
+    /// so keeping this around saves re-encoding `name` on every single call. Properties are built
+    /// once per schema, and schemas are cached, so this costs one allocation per event *type*.
+    pub(crate) name_utf16: U16CString,
     /// Represent the [PropertyFlags]
     pub flags: PropertyFlags,
     /// Information about the property.
@@ -100,7 +107,10 @@ pub struct Property {
 
 #[doc(hidden)]
 impl Property {
-    pub fn new(name: String, property: &Etw::EVENT_PROPERTY_INFO) -> Result<Self, PropertyError> {
+    pub fn new(
+        name: U16CString,
+        property: &Etw::EVENT_PROPERTY_INFO,
+    ) -> Result<Self, PropertyError> {
         let flags = PropertyFlags::from(property.Flags);
 
         if flags.contains(PropertyFlags::PROPERTY_STRUCT) {
@@ -109,7 +119,8 @@ impl Property {
             // fields to be parsed successfully. If code later attempts to read the struct field, a
             // LengthMismatch error will be raised because its length is zero.
             Ok(Property {
-                name,
+                name: name.to_string_lossy(),
+                name_utf16: name,
                 flags,
                 info: PropertyInfo::default(),
             })
@@ -150,9 +161,13 @@ impl Property {
 
             let in_type = FromPrimitive::from_u16(it).unwrap_or(TdhInType::InTypeNull);
 
+            let name_utf16 = name;
+            let name = name_utf16.to_string_lossy();
+
             match count {
                 Some(c) => Ok(Property {
                     name,
+                    name_utf16,
                     flags,
                     info: PropertyInfo::Array {
                         in_type,
@@ -163,6 +178,7 @@ impl Property {
                 }),
                 None => Ok(Property {
                     name,
+                    name_utf16,
                     flags,
                     info: PropertyInfo::Value {
                         in_type,
@@ -203,10 +219,17 @@ pub enum TdhInType {
     InTypeSid,        // Field size determined by the first few bytes of the field
     InTypeHexInt32,
     InTypeHexInt64,
-    InTypeCountedString = 300,
-    InTypeCountedAnsiString,
-    InTypeReversedCountedString,
+    InTypeCountedString = 300, // A 16-bit byte count, then the UTF-16 string
+    InTypeCountedAnsiString,   // A 16-bit byte count, then the string
+    InTypeReversedCountedString, // As above, with a big-endian count
     InTypeReversedCountedAnsiString,
+    InTypeNonNullTerminatedString,
+    InTypeNonNullTerminatedAnsiString,
+    InTypeUnicodeChar,
+    InTypeAnsiChar,
+    InTypeSizeT,
+    InTypeHexDump,
+    InTypeWbemSid, // A TOKEN_USER (two pointer-sized fields), then the SID
 }
 
 /// Represent a TDH_OUT_TYPE
