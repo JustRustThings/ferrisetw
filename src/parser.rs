@@ -1001,6 +1001,30 @@ impl private::TryParse<Vec<u8>> for Parser<'_, '_> {
     }
 }
 
+/// The `&[u8]` impl of the `TryParse` trait hands out the property bytes where they already are,
+/// in the record, where the `Vec<u8>` impl copies them. The slice borrows the record rather than
+/// the [`Parser`], so it stays usable for as long as the callback holds the record.
+///
+/// The bytes are exactly what the provider wrote, with no type-directed fixup: an
+/// `InTypeWbemSid` property, for instance, starts with a `TOKEN_USER` rather than with the SID.
+///
+/// # Example
+/// ```
+/// # use ferrisetw::EventRecord;
+/// # use ferrisetw::schema_locator::SchemaLocator;
+/// # use ferrisetw::parser::Parser;
+/// let my_callback = |record: &EventRecord, schema_locator: &SchemaLocator| {
+///     let schema = schema_locator.event_schema(record).unwrap();
+///     let parser = Parser::create(record, &schema);
+///     let sid: &[u8] = parser.try_parse("UserSid").unwrap();
+/// };
+/// ```
+impl<'record> private::TryParse<&'record [u8]> for Parser<'_, 'record> {
+    fn try_parse_impl(&self, name: &str) -> ParserResult<&'record [u8]> {
+        Ok(self.find_property(name)?.buffer)
+    }
+}
+
 // TODO: Implement SocketAddress
 // TODO: Study if we can use primitive types for HexInt64, HexInt32 and Pointer
 
