@@ -4,6 +4,7 @@
 
 use crate::native::etw_types::event_record::EventRecord;
 use crate::native::sddl;
+pub use crate::native::sddl::SidStr;
 use crate::native::tdh;
 use crate::native::tdh_types::{
     Property, PropertyCount, PropertyInfo, PropertyLength, TdhInType, TdhOutType,
@@ -1030,15 +1031,35 @@ impl<'record> private::TryParse<&'record [u8]> for Parser<'_, 'record> {
 /// These are the bytes the textual form is made of, and only those: the header and its
 /// sub-authorities, without the `TOKEN_USER` an `InTypeWbemSid` property carries in front of them
 /// and without any padding the record leaves after them. The string form of a SID is a function of
-/// those bytes alone, so two `RawSid`s are equal exactly when their strings would be, which lets a
-/// callback compare SIDs where they lie rather than formatting both.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// those bytes alone, so two `RawSid`s are equal exactly when their strings would be -- which lets
+/// a callback compare SIDs where they lie and format only the ones it keeps, with
+/// [`RawSid::to_sid_str`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RawSid<'record>(&'record [u8]);
 
 impl<'record> RawSid<'record> {
+    /// The SID in the form `ConvertSidToStringSidA` would write, e.g. `S-1-5-21-4-5-6-1001`
+    ///
+    /// The text is held inline, so this allocates nothing: [`SidStr::as_str`] borrows it, and a
+    /// caller can copy it straight into whatever ends up owning it.
+    pub fn to_sid_str(&self) -> SidStr {
+        sddl::format_sid(self.0)
+    }
+
+    /// The same text, in a `String` of exactly its length
+    pub fn to_sid_string(&self) -> String {
+        self.to_sid_str().as_str().to_owned()
+    }
+
     /// The SID as it lies in the record, header first
     pub fn as_bytes(&self) -> &'record [u8] {
         self.0
+    }
+}
+
+impl std::fmt::Debug for RawSid<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RawSid").field(&self.to_sid_str()).finish()
     }
 }
 
@@ -1082,7 +1103,7 @@ fn sid_in_buffer(buffer: &[u8], in_type: TdhInType, pointer_size: usize) -> Pars
 ///     let user: RawSid = parser.try_parse("UserSid").unwrap();
 ///     let owner: RawSid = parser.try_parse("OwnerSid").unwrap();
 ///     if user != owner {
-///         println!("{:?} acting on behalf of {:?}", user, owner);
+///         println!("{} acting on behalf of {}", user.to_sid_str(), owner.to_sid_str());
 ///     }
 /// };
 /// ```
@@ -1143,11 +1164,14 @@ mod test {
             plain,
             RawSid(sid_in_buffer(&wbem_32_bit, TdhInType::InTypeWbemSid, 4).unwrap())
         );
+        assert_eq!(plain.to_sid_str().as_str(), "S-1-5-18");
 
         // BUILTIN\Administrators
         let admins = [1, 2, 0, 0, 0, 0, 0, 5, 0x20, 0, 0, 0, 0x20, 2, 0, 0];
         let admins = RawSid(sid_in_buffer(&admins, TdhInType::InTypeSid, 8).unwrap());
         assert_ne!(plain, admins);
+        assert_eq!(admins.to_sid_string(), "S-1-5-32-544");
+        assert_eq!(admins.to_sid_string().capacity(), "S-1-5-32-544".len());
     }
 
     #[test]
