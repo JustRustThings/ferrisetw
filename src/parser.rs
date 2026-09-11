@@ -1025,12 +1025,146 @@ impl<'record> private::TryParse<&'record [u8]> for Parser<'_, 'record> {
     }
 }
 
+/// The bytes of a SID-typed property, borrowed from the event record
+///
+/// These are the bytes the textual form is made of, and only those: the header and its
+/// sub-authorities, without the `TOKEN_USER` an `InTypeWbemSid` property carries in front of them
+/// and without any padding the record leaves after them. The string form of a SID is a function of
+/// those bytes alone, so two `RawSid`s are equal exactly when their strings would be, which lets a
+/// callback compare SIDs where they lie rather than formatting both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RawSid<'record>(&'record [u8]);
+
+impl<'record> RawSid<'record> {
+    /// The SID as it lies in the record, header first
+    pub fn as_bytes(&self) -> &'record [u8] {
+        self.0
+    }
+}
+
+/// The SID within the buffer of a property of `in_type`
+///
+/// `InTypeWbemSid` prefixes the SID with a `TOKEN_USER`, whose pointer field is stale by the time
+/// the record reaches us and differs between records carrying the very same SID, so it has to go
+/// before two buffers can be compared. Anything past the SID is dropped for the same reason: a
+/// fixed-length property is padded to its declared length, and TDH may also have sized the property
+/// beyond it.
+fn sid_in_buffer(buffer: &[u8], in_type: TdhInType, pointer_size: usize) -> ParserResult<&[u8]> {
+    let sid = match in_type {
+        TdhInType::InTypeSid => buffer,
+        TdhInType::InTypeWbemSid => buffer
+            .get(2 * pointer_size..)
+            .ok_or(ParserError::LengthMismatch)?,
+        _ => return Err(ParserError::InvalidType),
+    };
+
+    let size = sddl::sid_size(sid).map_err(sddl::SddlNativeError::InvalidSid)?;
+    sid.get(..size).ok_or(ParserError::LengthMismatch)
+}
+
+/// The `RawSid` impl of the `TryParse` trait retrieves the following [TdhInTypes]:
+///
+/// * InTypeSid
+/// * InTypeWbemSid
+///
+/// Any other type is [`ParserError::InvalidType`], as is a buffer that does not hold a SID
+/// `IsValidSid` would accept.
+///
+/// # Example
+/// ```
+/// # use ferrisetw::EventRecord;
+/// # use ferrisetw::schema_locator::SchemaLocator;
+/// # use ferrisetw::parser::{Parser, RawSid};
+/// let my_callback = |record: &EventRecord, schema_locator: &SchemaLocator| {
+///     let schema = schema_locator.event_schema(record).unwrap();
+///     let parser = Parser::create(record, &schema);
+///
+///     let user: RawSid = parser.try_parse("UserSid").unwrap();
+///     let owner: RawSid = parser.try_parse("OwnerSid").unwrap();
+///     if user != owner {
+///         println!("{:?} acting on behalf of {:?}", user, owner);
+///     }
+/// };
+/// ```
+///
+/// [TdhInTypes]: TdhInType
+impl<'record> private::TryParse<RawSid<'record>> for Parser<'_, 'record> {
+    fn try_parse_impl(&self, name: &str) -> ParserResult<RawSid<'record>> {
+        let prop_slice = self.find_property(name)?;
+
+        match prop_slice.property.info {
+            PropertyInfo::Value { in_type, .. } => Ok(RawSid(sid_in_buffer(
+                prop_slice.buffer,
+                in_type,
+                self.record.pointer_size(),
+            )?)),
+            _ => Err(ParserError::InvalidType),
+        }
+    }
+}
+
 // TODO: Implement SocketAddress
 // TODO: Study if we can use primitive types for HexInt64, HexInt32 and Pointer
 
 #[cfg(test)]
 mod test {
-    use super::{counted_size, utf16_property_to_string};
+    use super::{
+        counted_size, sid_in_buffer, utf16_property_to_string, ParserError, RawSid, TdhInType,
+    };
+
+    /// `NT AUTHORITY\SYSTEM`, the shortest SID and by far the most common one
+    const SYSTEM: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
+
+    /// A `TOKEN_USER` -- a `PSID` and its attributes -- in front of `SYSTEM`, as `InTypeWbemSid`
+    /// carries it
+    fn wbem_sid(pointer: usize, pointer_size: usize) -> Vec<u8> {
+        let mut buffer = pointer.to_ne_bytes()[..pointer_size].to_vec();
+        buffer.resize(2 * pointer_size, 0);
+        buffer.extend_from_slice(&SYSTEM);
+        buffer
+    }
+
+    #[test]
+    fn the_same_sid_in_every_form_is_one_value() {
+        // The `PSID` in a TOKEN_USER is stale by the time the record reaches us, and differs
+        // between records carrying the very same SID
+        let wbem = wbem_sid(0xFFFF_8000_1111_1111, 8);
+        let wbem_32_bit = wbem_sid(0x8123_4567, 4);
+        let mut padded = SYSTEM.to_vec();
+        padded.extend_from_slice(&[0; 8]);
+
+        let plain = RawSid(sid_in_buffer(&padded, TdhInType::InTypeSid, 8).unwrap());
+
+        assert_eq!(
+            plain,
+            RawSid(sid_in_buffer(&wbem, TdhInType::InTypeWbemSid, 8).unwrap())
+        );
+        assert_eq!(
+            plain,
+            RawSid(sid_in_buffer(&wbem_32_bit, TdhInType::InTypeWbemSid, 4).unwrap())
+        );
+
+        // BUILTIN\Administrators
+        let admins = [1, 2, 0, 0, 0, 0, 0, 5, 0x20, 0, 0, 0, 0x20, 2, 0, 0];
+        let admins = RawSid(sid_in_buffer(&admins, TdhInType::InTypeSid, 8).unwrap());
+        assert_ne!(plain, admins);
+    }
+
+    #[test]
+    fn a_buffer_that_does_not_hold_a_sid_is_an_error() {
+        assert!(matches!(
+            sid_in_buffer(&SYSTEM, TdhInType::InTypeUnicodeString, 8),
+            Err(ParserError::InvalidType)
+        ));
+
+        // Declares five sub-authorities, carries one
+        let mut truncated = SYSTEM;
+        truncated[1] = 5;
+        assert!(sid_in_buffer(&truncated, TdhInType::InTypeSid, 8).is_err());
+
+        // Not even a TOKEN_USER's worth of bytes
+        assert!(sid_in_buffer(&SYSTEM, TdhInType::InTypeWbemSid, 8).is_err());
+    }
 
     #[test]
     fn counted_string_size_is_prefix_plus_count() {
