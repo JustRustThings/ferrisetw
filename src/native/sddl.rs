@@ -62,47 +62,110 @@ pub(crate) fn sid_size(bytes: &[u8]) -> Result<usize, &'static str> {
     Ok(SID_HEADER_SIZE + 4 * sub_authority_count)
 }
 
-/// The number of decimal digits `value` will be written as
-fn decimal_len(value: u32) -> usize {
-    // `checked_ilog10` is `None` for zero, which is written as one digit
-    (value.checked_ilog10().unwrap_or(0) + 1) as usize
-}
+/// The longest text a SID can have: `S-`, a revision of up to three digits, an identifier
+/// authority written as `-0x` and twelve hexadecimal digits, and `SID_MAX_SUB_AUTHORITIES`
+/// sub-authorities of up to ten digits each
+const SID_STRING_MAX_LEN: usize =
+    "S-".len() + 3 + "-0x".len() + 12 + SID_MAX_SUB_AUTHORITIES * (1 + 10);
 
-/// The number of hexadecimal digits `value` will be written as, without leading zeros
-fn hex_len(value: u64) -> usize {
-    // One digit per four bits; `checked_ilog2` is `None` for zero, which is written as one digit
-    (value.checked_ilog2().unwrap_or(0) / 4 + 1) as usize
-}
-
-/// Append `value` in hexadecimal, without leading zeros
-fn push_hex(out: &mut String, value: u64) {
-    for digit in (0..hex_len(value)).rev() {
-        let nibble = (value >> (4 * digit)) & 0xf;
-        out.push(HEX_DIGITS[nibble as usize] as char);
-    }
-}
-
-/// Append `value` in decimal
+/// A SID's text, held inline
 ///
-/// This is `write!(out, "{}", value)` without `core::fmt`, which is worth avoiding on a path that
-/// runs for every SID-typed property of every event: the formatting machinery costs more than
-/// everything else here put together.
-fn push_decimal(out: &mut String, value: u32) {
-    let mut digits = [0u8; 10];
-    let mut len = 0;
-    let mut rest = value;
-    loop {
-        digits[len] = b'0' + (rest % 10) as u8;
-        rest /= 10;
-        len += 1;
-        if rest == 0 {
-            break;
+/// A SID cannot be written in more than [`SID_STRING_MAX_LEN`] bytes, so formatting one needs no
+/// allocation at all: [`SidStr::as_str`] borrows the text out of the value itself, and a caller
+/// that wants it somewhere else -- in an interned or reference-counted string, say -- can copy it
+/// there directly, with no `String` in between.
+#[derive(Clone)]
+pub struct SidStr {
+    text: [u8; SID_STRING_MAX_LEN],
+    len: usize,
+}
+
+impl SidStr {
+    fn new() -> Self {
+        SidStr {
+            text: [0; SID_STRING_MAX_LEN],
+            len: 0,
         }
     }
 
-    while len > 0 {
-        len -= 1;
-        out.push(digits[len] as char);
+    /// The text written so far
+    pub fn as_str(&self) -> &str {
+        // Everything `push_*` writes is ASCII, so the fallback is unreachable; it is there so
+        // that a bug here could never panic a trace callback
+        std::str::from_utf8(&self.text[..self.len]).unwrap_or("<invalid sid>")
+    }
+
+    fn push(&mut self, byte: u8) {
+        if let Some(slot) = self.text.get_mut(self.len) {
+            *slot = byte;
+            self.len += 1;
+        }
+    }
+
+    fn push_str(&mut self, text: &str) {
+        for byte in text.bytes() {
+            self.push(byte);
+        }
+    }
+
+    /// Append `value` in decimal
+    ///
+    /// This is `write!(out, "{}", value)` without `core::fmt`, which is worth avoiding on a path
+    /// that runs for every SID-typed property of every event: the formatting machinery costs more
+    /// than everything else here put together.
+    fn push_decimal(&mut self, value: u32) {
+        let mut digits = [0u8; 10];
+        let mut len = 0;
+        let mut rest = value;
+        loop {
+            digits[len] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+            len += 1;
+            if rest == 0 {
+                break;
+            }
+        }
+
+        while len > 0 {
+            len -= 1;
+            self.push(digits[len]);
+        }
+    }
+
+    /// Append `value` in hexadecimal, without leading zeros
+    fn push_hex(&mut self, value: u64) {
+        // One digit per four bits; `checked_ilog2` is `None` for zero, which is written as one digit
+        let digits = (value.checked_ilog2().unwrap_or(0) / 4 + 1) as usize;
+        for digit in (0..digits).rev() {
+            let nibble = (value >> (4 * digit)) & 0xf;
+            self.push(HEX_DIGITS[nibble as usize]);
+        }
+    }
+}
+
+impl std::ops::Deref for SidStr {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for SidStr {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for SidStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::fmt::Debug for SidStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
     }
 }
 
@@ -114,10 +177,6 @@ fn push_decimal(out: &mut String, value: u32) {
 /// where `ConvertSidToStringSidA` also `LocalAlloc`s its output buffer (which we then have to
 /// `LocalFree`) on the Win32 process heap, and costs a syscall for every SID of every event.
 ///
-/// The length is worked out before anything is written, so that `String` is allocated once and at
-/// exactly the right size. Most SIDs on a given host are short well-known ones such as
-/// `S-1-5-18`, so reserving an upper bound instead would multiply the bytes this churns.
-///
 /// [`ConvertSidToStringSidA`]: https://learn.microsoft.com/en-us/windows/win32/api/sddl/nf-sddl-convertsidtostringsida
 pub fn convert_sid_to_string(sid: &[u8]) -> SddlResult<String> {
     // `ConvertSidToStringSidA` validates the SID before formatting it, and callers may well be
@@ -127,8 +186,14 @@ pub fn convert_sid_to_string(sid: &[u8]) -> SddlResult<String> {
     let sid = sid.get(..size).ok_or(SddlNativeError::InvalidSid(
         "shorter than the sub-authority count it declares",
     ))?;
+
+    Ok(format_sid(sid).as_str().to_owned())
+}
+
+/// Format a SID whose header has already been checked, and whose length is exactly the one that
+/// header declares
+pub(crate) fn format_sid(sid: &[u8]) -> SidStr {
     let (header, sub_authorities) = sid.split_at(SID_HEADER_SIZE);
-    let revision = u32::from(header[0]);
 
     // The identifier authority is a six-byte big-endian number. Windows prints it in decimal when
     // it fits in four bytes -- which is the case for every authority in use -- and in hexadecimal,
@@ -136,49 +201,34 @@ pub fn convert_sid_to_string(sid: &[u8]) -> SddlResult<String> {
     let authority = u64::from_be_bytes([
         0, 0, header[2], header[3], header[4], header[5], header[6], header[7],
     ]);
-    let decimal_authority = u32::try_from(authority).ok();
+
+    let mut out = SidStr::new();
+    out.push_str("S-");
+    out.push_decimal(u32::from(header[0]));
+
+    match u32::try_from(authority) {
+        Ok(value) => {
+            out.push(b'-');
+            out.push_decimal(value);
+        }
+        Err(_) => {
+            out.push_str("-0x");
+            out.push_hex(authority);
+        }
+    }
 
     // The sub-authorities are `u32`s, in the memory order of the record
-    let sub_authorities = sub_authorities.chunks_exact(4).map(|sub_authority| {
-        u32::from_ne_bytes([
+    for sub_authority in sub_authorities.chunks_exact(4) {
+        out.push(b'-');
+        out.push_decimal(u32::from_ne_bytes([
             sub_authority[0],
             sub_authority[1],
             sub_authority[2],
             sub_authority[3],
-        ])
-    });
-
-    let mut size = "S-".len() + decimal_len(revision);
-    size += match decimal_authority {
-        Some(value) => 1 + decimal_len(value),
-        None => "-0x".len() + hex_len(authority),
-    };
-    for value in sub_authorities.clone() {
-        size += 1 + decimal_len(value);
+        ]));
     }
 
-    let mut out = String::with_capacity(size);
-    out.push_str("S-");
-    push_decimal(&mut out, revision);
-
-    match decimal_authority {
-        Some(value) => {
-            out.push('-');
-            push_decimal(&mut out, value);
-        }
-        None => {
-            out.push_str("-0x");
-            push_hex(&mut out, authority);
-        }
-    }
-
-    for value in sub_authorities {
-        out.push('-');
-        push_decimal(&mut out, value);
-    }
-
-    debug_assert_eq!(out.len(), size, "the reserved size must be exact");
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
@@ -225,6 +275,28 @@ mod test {
         assert_eq!(convert_sid_to_string(&sid).unwrap(), "S-1-0x100000000-1");
         let sid = [1, 1, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 1, 0, 0, 0];
         assert_eq!(convert_sid_to_string(&sid).unwrap(), "S-1-0xabcdef012345-1");
+    }
+
+    #[test]
+    fn the_longest_possible_sid_fits_inline() {
+        // Every field at its maximum: an authority too large for decimal, and the most
+        // sub-authorities `IsValidSid` accepts, each the longest a `u32` can be
+        let mut sid = vec![
+            SID_REVISION,
+            SID_MAX_SUB_AUTHORITIES as u8,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+        ];
+        sid.resize(SID_HEADER_SIZE + 4 * SID_MAX_SUB_AUTHORITIES, 0xFF);
+
+        let text = format_sid(&sid);
+        assert!(text.as_str().starts_with("S-1-0xffffffffffff-4294967295-"));
+        assert_eq!(text.as_str().len(), 183);
+        assert!(text.as_str().len() <= SID_STRING_MAX_LEN);
     }
 
     #[test]
